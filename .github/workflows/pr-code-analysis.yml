@@ -29,15 +29,15 @@ jobs:
         run: npm install minimist
 
       # ✅ Step 4: Clone your Sentinels rules repo
-      - name: Clone Sentinels Rules Repo
-        run: |
-          git clone https://github.com/usha-kakde-amla/-sentinels-code-Analyzer/tree/main/rules
+      - - name: Clone Sentinels Rules Repo
+          run: |
+            git clone https://github.com/usha-kakde-amla/-sentinels-code-Analyzer.git sentinels-rules
 
       # ✅ Step 5: Verify rules exist
-      - name: Verify rules
-        run: |
+      --  name: Verify rules
+          run: |
           echo "Listing rules..."
-          ls -la sentinels-rules/rules || echo "❌ Rules not found"
+          ls -la sentinels-rules/rules
 
       # ✅ Step 6: Generate PR diff
       - name: Generate PR diff
