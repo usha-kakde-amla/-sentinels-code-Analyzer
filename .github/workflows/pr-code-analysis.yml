@@ -31,6 +31,20 @@ jobs:
         with:
           node-version: "20"
 
+      # ── Organisation gate ────────────────────────────────────────
+      # Fails immediately if SENTINELS_ORG secret is not configured.
+      - name: Verify organisation secret is set
+        env:
+          SENTINELS_ORG: ${{ secrets.SENTINELS_ORG }}
+        run: |
+          if [ -z "$SENTINELS_ORG" ]; then
+            echo "❌ SENTINELS_ORG secret is not configured."
+            echo "   Go to: Settings → Secrets and variables → Actions"
+            echo "   Add a secret named SENTINELS_ORG with your organisation name."
+            exit 1
+          fi
+          echo "✅ Organisation verified."
+
       # Generate diff of only supported file types
       - name: Generate PR diff
         run: |
@@ -45,6 +59,7 @@ jobs:
         id: sentinels
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SENTINELS_ORG: ${{ secrets.SENTINELS_ORG }}
           RULES_DIR: ${{ github.workspace }}/rules
         run: |
           node pr-analyzer.js \

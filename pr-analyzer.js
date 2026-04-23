@@ -36,8 +36,41 @@ const https = require("https");
 
 // ── Config ──────────────────────────────────────────────────────
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL   = process.env.GEMINI_MODEL || "gemini-2.5-flash-preview-04-17";
+const GEMINI_MODEL   = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const RULES_DIR      = process.env.RULES_DIR    || path.join(__dirname, "rules");
+
+// ── Organization lock — only this org's rules are used ──────────
+const SENTINELS_ORG = process.env.SENTINELS_ORG || "sentinels-internal";
+
+// ── Load ALL rule files once and embed them in the Gemini prompt ─
+function loadAllRulesForPrompt() {
+    const ruleFiles = [
+        "Security.json", "Vulnerability.json", "Performance.json",
+        "SQL.json", "Typescript.json", "Javascript.json", "CSHTML.json",
+    ];
+    const allRules = [];
+    for (const filename of ruleFiles) {
+        const ruleFile = path.join(RULES_DIR, filename);
+        if (!fs.existsSync(ruleFile)) continue;
+        try {
+            const raw = JSON.parse(fs.readFileSync(ruleFile, "utf8"));
+            const items = Array.isArray(raw) ? raw : (raw.rules || []);
+            for (const r of items) {
+                allRules.push({
+                    id: r.RuleId || r.id,
+                    title: r.Title || r.name,
+                    severity: r.Severity || r.severity,
+                    message: r.Message || r.description,
+                    fix: r.Fix || r.compliantExample || "",
+                });
+            }
+        } catch (_) { /* skip malformed files */ }
+    }
+    return allRules;
+}
+
+// Embed all org rules once at startup (not logged, not exposed)
+const ORG_RULES_CATALOGUE = loadAllRulesForPrompt();
 
 // ── Extension → Language ID ─────────────────────────────────────
 const EXT_LANG_MAP = {
@@ -343,28 +376,46 @@ function keywordMatch(lines, patterns, ruleId) {
 //  violations already found by the rules engine.
 // ═══════════════════════════════════════════════════════════════
 function buildGeminiPrompt(codeContent, violations, languageId) {
-  const violationList = violations.map((v, i) =>
-    `${i + 1}. RuleId: ${v.ruleId} | Severity: ${v.severity.toUpperCase()}\n` +
-    `   Title: ${v.title}\n` +
-    `   Line ${v.line}: ${v.matchedText}\n` +
-    `   Rule says: ${v.message}\n` +
-    `   Rule fix: ${v.fix}`
-  ).join("\n\n");
+    // Embed the complete organisation rule catalogue into every prompt.
+    // Gemini can ONLY reference rule IDs that exist in this list.
+    const catalogueSummary = ORG_RULES_CATALOGUE
+        .map(r => `  • [${r.id}] ${r.title} (${r.severity}) — ${r.message}`)
+        .join("\n");
 
-  return `You are a code review assistant. The static analysis engine has already detected the following potential violations in this ${languageId} code using predefined rules.
+    const violationList = violations.map((v, i) =>
+        `${i + 1}. RuleId: ${v.ruleId} | Severity: ${v.severity.toUpperCase()}\n` +
+        `   Title: ${v.title}\n` +
+        `   Line ${v.line}: ${v.matchedText}\n` +
+        `   Rule says: ${v.message}\n` +
+        `   Rule fix: ${v.fix}`
+    ).join("\n\n");
 
-Your job is to:
-1. CONFIRM each violation (is it a real problem in context?)
-2. Write a CLEAR one-line explanation of why it is a problem
-3. Write a SHORT actionable fix specific to the actual code snippet
+    return `You are a code review assistant for the ${SENTINELS_ORG} organisation.
 
-IMPORTANT CONSTRAINTS:
-- You MUST NOT add new violations not in the list below
-- You MUST NOT change RuleId, title, or severity values  
-- If a violation is a false positive, set "confirmed": false and explain why
-- Only return violations from the list below
+══════════════════════════════════════════════════════════════
+  ORGANISATION RULE CATALOGUE (the ONLY rules that exist)
+══════════════════════════════════════════════════════════════
+${catalogueSummary}
 
-DETECTED VIOLATIONS (${violations.length} total):
+══════════════════════════════════════════════════════════════
+  ABSOLUTE CONSTRAINTS — read before doing anything else
+══════════════════════════════════════════════════════════════
+1. You MUST ONLY reference Rule IDs that appear in the ORGANISATION RULE CATALOGUE above.
+2. You MUST NOT invent, suggest, or reference any rule, standard, or best-practice
+   that is NOT listed in the catalogue above — not ESLint, not OWASP, not SonarQube,
+   not your own knowledge. Only catalogue rules exist for this organisation.
+3. You MUST NOT add new violations that are not already in DETECTED VIOLATIONS below.
+4. You MUST NOT change RuleId, title, severity, or category values.
+5. If a detected violation is a false positive in this context, set "confirmed": false.
+6. Your fix suggestions must reference only the catalogue rule's "Fix" guidance.
+
+The static analysis engine has already matched the violations below using the
+organisation's rule patterns. Your job is ONLY to:
+  a) Confirm each violation is real (not a false positive) in its actual context.
+  b) Write a clear one-line explanation tied to the catalogue rule.
+  c) Write a short actionable fix that applies the catalogue rule to THIS snippet.
+
+DETECTED VIOLATIONS (${violations.length} total — sourced from org rules only):
 ${violationList}
 
 SOURCE CODE (${languageId}):
@@ -374,23 +425,22 @@ Return ONLY a JSON object in this exact shape (no markdown, no code fences):
 {
   "confirmedViolations": [
     {
-      "ruleId":      "<same RuleId from above>",
-      "title":       "<same Title from above>",
-      "severity":    "<same severity from above>",
-      "category":    "<same category from above>",
-      "line":        <same line number>,
-      "snippet":     "<the exact offending code from that line>",
-      "message":     "<same message from above>",
-      "fix":         "<same fix from above>",
-      "explanation": "<your one-line explanation of WHY this specific code is a problem>",
-      "actionableFix":"<specific fix for THIS code snippet>",
-      "confirmed":   true
+      "ruleId":       "<same RuleId from DETECTED VIOLATIONS — must exist in catalogue>",
+      "title":        "<same Title from above>",
+      "severity":     "<same severity from above>",
+      "category":     "<same category from above>",
+      "line":         <same line number>,
+      "snippet":      "<the exact offending code from that line>",
+      "message":      "<same message from above>",
+      "fix":          "<same fix from above>",
+      "explanation":  "<one-line explanation referencing the catalogue rule>",
+      "actionableFix":"<specific fix for THIS snippet using the catalogue rule guidance>",
+      "confirmed":    true
     }
   ],
   "summary": "<X errors, Y warnings, Z info — total N violations in this file>"
 }`;
 }
-
 function callGemini(prompt) {
   return new Promise((resolve, reject) => {
     if (!GEMINI_API_KEY) {
