@@ -1,5 +1,4 @@
 name: Sentinels PR Analysis
-
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -8,49 +7,39 @@ jobs:
   analyze:
     name: Sentinels Rule Analysis
     runs-on: ubuntu-latest
-
     permissions:
       pull-requests: write
       contents: read
-
     steps:
-      # ✅ Step 1: Checkout PR code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ✅ Step 2: Setup Node
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # ✅ Step 3: Install dependency
       - name: Install dependencies
         run: npm install minimist
 
-      # ✅ Step 4: Clone your Sentinels rules repo
-      - name: Clone Sentinels Rules Repo
+      - name: Clone Sentinels Rules Repo        # ✅ Fixed (was "- -")
         run: |
-          git clone https://github.com/usha-kakde-amla/-sentinels-code-Analyzer/tree/main/rules
+          git clone https://github.com/usha-kakde-amla/-sentinels-code-Analyzer.git sentinels-rules
 
-      # ✅ Step 5: Verify rules exist
-      - name: Verify rules
+      - name: Verify rules                      # ✅ Fixed (was "--")
         run: |
           echo "Listing rules..."
-          ls -la sentinels-rules/rules || echo "❌ Rules not found"
+          ls -la sentinels-rules/rules
 
-      # ✅ Step 6: Generate PR diff
       - name: Generate PR diff
         run: |
           git fetch origin ${{ github.base_ref }}
           git diff origin/${{ github.base_ref }}...HEAD \
             -- "*.cs" "*.js" "*.ts" "*.sql" "*.html" \
             > pr-changes.diff
-
           echo "Diff lines:"
           wc -l pr-changes.diff
 
-      # ✅ Step 7: Run analyzer
       - name: Run Sentinels Analyzer
         id: analyzer
         env:
@@ -60,28 +49,22 @@ jobs:
             --diff pr-changes.diff \
             --output analysis-report.json \
             --comment pr-comment.md || true
-
           echo "exit_code=$?" >> $GITHUB_OUTPUT
 
-      # ✅ Step 8: Show generated comment (debug)
       - name: Debug output
         run: |
           echo "---- PR COMMENT ----"
           cat pr-comment.md || echo "No comment generated"
 
-      # ✅ Step 9: Post comment on PR
       - name: Post PR comment
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require("fs");
-
             let body = "⚠️ No analysis result";
-
             if (fs.existsSync("pr-comment.md")) {
               body = fs.readFileSync("pr-comment.md", "utf8");
             }
-
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -89,14 +72,12 @@ jobs:
               body
             });
 
-      # ✅ Step 10: Upload report
       - name: Upload report
         uses: actions/upload-artifact@v4
         with:
           name: sentinels-report
           path: analysis-report.json
 
-      # ❌ Step 11: Fail PR if issues found
       - name: Fail if issues found
         if: steps.analyzer.outputs.exit_code != '0'
         run: |
