@@ -1,0 +1,92 @@
+# ─────────────────────────────────────────────────────────────────
+#  .github/workflows/pr-code-analysis.yml
+#
+#  Runs Sentinels rule-constrained analysis on every PR.
+#  Uses the SAME rules as the VS Code extension.
+#  Posts a formatted comment matching the VS Code panel output.
+# ─────────────────────────────────────────────────────────────────
+
+name: Sentinels PR Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  analyze:
+    name: Sentinels + Gemini Rule Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Generate diff of only supported file types
+      - name: Generate PR diff
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          git diff origin/${{ github.base_ref }}...HEAD \
+            -- "*.js" "*.jsx" "*.ts" "*.tsx" "*.cs" "*.sql" "*.cshtml" "*.html" \
+            > pr-changes.diff
+          echo "Lines in diff: $(wc -l < pr-changes.diff)"
+
+      # Run the Sentinels analyzer
+      - name: Run Sentinels analysis
+        id: sentinels
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          RULES_DIR: ${{ github.workspace }}/rules
+        run: |
+          node pr-analyzer.js \
+            --diff pr-changes.diff \
+            --output analysis-report.json \
+            --comment pr-comment.md
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      # Post the markdown comment to the PR
+      - name: Post PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            let body = "";
+
+            if (fs.existsSync("pr-comment.md")) {
+              body = fs.readFileSync("pr-comment.md", "utf8");
+            } else {
+              body = "## 🛡️ Sentinels Analysis\n\n⚠️ Analysis did not complete. Check the workflow logs.";
+            }
+
+            await github.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      # Upload the full JSON report as artifact
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinels-report
+          path: analysis-report.json
+          retention-days: 30
+
+      # Fail the check if any violations found (remove to make advisory-only)
+      - name: Fail on violations
+        if: steps.sentinels.outputs.exit_code != '0'
+        run: |
+          echo "❌ Violations found. See PR comment for details."
+          exit 1
