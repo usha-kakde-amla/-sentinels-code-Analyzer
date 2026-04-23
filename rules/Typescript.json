@@ -1,0 +1,83 @@
+[
+  {
+    "RuleId": "TS_SEC001",
+    "Title": "Avoid Using any Type",
+    "Description": "Using 'any' bypasses TypeScript type safety.",
+    "Severity": "Warning",
+    "Detection": [": any", "as any"],
+    "Message": "Avoid using any type.",
+    "Fix": "Use strict typing or generics."
+  },
+  {
+    "RuleId": "TS_SEC002",
+    "Title": "Unsafe Non-Null Assertion",
+    "Description": "Using ! operator may cause runtime exceptions.",
+    "Severity": "Warning",
+    "Detection": ["!." , "!;"],
+    "Message": "Unsafe non-null assertion detected.",
+    "Fix": "Add proper null checks."
+  },
+  {
+    "RuleId": "TS_SEC003",
+    "Title": "Unsafe Type Assertion",
+    "Description": "Incorrect casting using 'as' may hide bugs.",
+    "Severity": "Warning",
+    "Detection": ["as unknown as"],
+    "Message": "Unsafe type assertion detected.",
+    "Fix": "Use proper type guards."
+  },
+  {
+    "RuleId": "TS_SEC004",
+    "Title": "Unvalidated External Data",
+    "Description": "External API data should be validated before usage.",
+    "Severity": "Warning",
+    "Detection": ["fetch(", "axios.get("],
+    "Message": "External data used without validation.",
+    "Fix": "Validate using Zod, io-ts, or schema validators."
+  },
+  {
+    "RuleId": "TS_PERF001",
+    "Title": "Inefficient Interface Re-declaration",
+    "Description": "Repeated interface merging increases complexity.",
+    "Severity": "Info",
+    "Detection": ["interface redeclared multiple times"],
+    "Message": "Multiple interface declarations detected.",
+    "Fix": "Consolidate interface definitions."
+  },
+  {
+    "RuleId": "TS_PERF002",
+    "Title": "Excessive Generic Constraints",
+    "Description": "Overly complex generics impact readability and performance.",
+    "Severity": "Info",
+    "Detection": ["<T extends"],
+    "Message": "Complex generic constraint detected.",
+    "Fix": "Simplify generic usage."
+  },
+  {
+    "RuleId": "TS_PERF003",
+    "Title": "Inefficient Object Cloning",
+    "Description": "Deep cloning using JSON serialization impacts performance.",
+    "Severity": "Info",
+    "Detection": ["JSON.parse(JSON.stringify("],
+    "Message": "Inefficient deep clone detected.",
+    "Fix": "Use structuredClone."
+  },
+  {
+    "RuleId": "TS_PERF004",
+    "Title": "Unused Types or Interfaces",
+    "Description": "Unused type declarations increase bundle size.",
+    "Severity": "Info",
+    "Detection": ["unused interface", "unused type"],
+    "Message": "Unused type detected.",
+    "Fix": "Remove unused types or interfaces."
+  },
+  {
+    "RuleId": "TS_PERF005",
+    "Title": "Improper Async Return Type",
+    "Description": "Async functions should explicitly return Promise<T>.",
+    "Severity": "Warning",
+    "Detection": ["async function without return type"],
+    "Message": "Async function missing return type.",
+    "Fix": "Specify Promise<T> return type."
+  }
+]

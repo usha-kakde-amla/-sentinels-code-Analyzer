@@ -1,0 +1,272 @@
+[
+  {
+    "RuleId": "SEC001",
+    "Title": "Avoid Hardcoded Credentials",
+    "Description": "Hardcoding usernames, passwords, API keys, or connection strings in code is a major security risk.",
+    "Severity": "Error",
+    "Detection": ["Hardcoded password", "API key in string literal", "connection string with credentials"],
+    "Message": "Do not hardcode sensitive credentials in code.",
+    "Fix": "Use environment variables or secure configuration (e.g., Azure Key Vault)"
+  },
+  {
+    "RuleId": "SEC002",
+    "Title": "SQL Injection Risk",
+    "Description": "Building SQL queries using string concatenation exposes the application to SQL injection attacks.",
+    "Severity": "Error",
+    "Detection": ["SQL query built using string concatenation"],
+    "Message": "Use parameterized queries to prevent SQL injection.",
+    "Fix": "Use SqlCommand parameters or ORM (e.g., Entity Framework)"
+  },
+  {
+    "RuleId": "SEC003",
+    "Title": "Command Injection Risk",
+    "Description": "Passing user input directly into system commands can lead to command injection.",
+    "Severity": "Error",
+    "Detection": ["Process.Start with user input"],
+    "Message": "Validate and sanitize input before executing system commands.",
+    "Fix": "Avoid direct command execution or use safe APIs"
+  },
+  {
+    "RuleId": "SEC004",
+    "Title": "Cross-Site Scripting (XSS)",
+    "Description": "Unencoded user input rendered in UI can lead to XSS attacks.",
+    "Severity": "Error",
+    "Detection": ["Rendering raw user input in HTML"],
+    "Message": "Encode user input before rendering.",
+    "Fix": "Use HTML encoding (e.g., HttpUtility.HtmlEncode)"
+  },
+  {
+    "RuleId": "SEC005",
+    "Title": "Cross-Site Request Forgery (CSRF) Protection Missing",
+    "Description": "Missing CSRF protection allows attackers to perform unauthorized actions.",
+    "Severity": "Error",
+    "Detection": ["POST actions without anti-forgery token"],
+    "Message": "Enable CSRF protection.",
+    "Fix": "Use AntiForgeryToken in ASP.NET"
+  },
+  {
+    "RuleId": "SEC006",
+    "Title": "Insecure Deserialization",
+    "Description": "Deserializing untrusted data can lead to remote code execution.",
+    "Severity": "Error",
+    "Detection": ["BinaryFormatter.Deserialize", "untrusted JSON/XML deserialization"],
+    "Message": "Avoid deserializing untrusted data.",
+    "Fix": "Use safe serializers or validate input"
+  },
+  {
+    "RuleId": "SEC007",
+    "Title": "Weak Cryptographic Algorithm",
+    "Description": "Using weak hashing algorithms like MD5 or SHA1 is insecure.",
+    "Severity": "Error",
+    "Detection": ["MD5", "SHA1"],
+    "Message": "Use strong cryptographic algorithms.",
+    "Fix": "Use SHA256 or higher"
+  },
+  {
+    "RuleId": "SEC008",
+    "Title": "Sensitive Data Logging",
+    "Description": "Logging sensitive data like passwords or tokens exposes them.",
+    "Severity": "Error",
+    "Detection": ["Logging password/token"],
+    "Message": "Do not log sensitive data.",
+    "Fix": "Mask or remove sensitive fields"
+  },
+  {
+    "RuleId": "SEC009",
+    "Title": "Open Redirect Vulnerability",
+    "Description": "Redirecting users using unvalidated input can lead to phishing attacks.",
+    "Severity": "Warning",
+    "Detection": ["Redirect with user-controlled URL"],
+    "Message": "Validate redirect URLs.",
+    "Fix": "Allow only trusted domains"
+  },
+  {
+    "RuleId": "SEC010",
+    "Title": "Path Traversal Vulnerability",
+    "Description": "Using user input in file paths can allow access to unauthorized files.",
+    "Severity": "Error",
+    "Detection": ["File path built from user input"],
+    "Message": "Validate and sanitize file paths.",
+    "Fix": "Use safe path APIs and restrict directories"
+  },
+  {
+    "RuleId": "SEC011",
+    "Title": "Missing HTTPS Enforcement",
+    "Description": "Serving sensitive data over HTTP is insecure.",
+    "Severity": "Error",
+    "Detection": ["No HTTPS redirection"],
+    "Message": "Enforce HTTPS.",
+    "Fix": "Use HTTPS redirection middleware"
+  },
+  {
+    "RuleId": "SEC012",
+    "Title": "Insecure Random Number Generation",
+    "Description": "Using Random for security-sensitive operations is insecure.",
+    "Severity": "Error",
+    "Detection": ["System.Random used for tokens/passwords"],
+    "Message": "Use cryptographic random generator.",
+    "Fix": "Use RNGCryptoServiceProvider or RandomNumberGenerator"
+  },
+  {
+    "RuleId": "SEC013",
+    "Title": "Hardcoded Encryption Keys",
+    "Description": "Hardcoding encryption keys makes encryption ineffective.",
+    "Severity": "Error",
+    "Detection": ["Hardcoded encryption key"],
+    "Message": "Do not hardcode encryption keys.",
+    "Fix": "Store keys securely (e.g., Key Vault)"
+  },
+  {
+    "RuleId": "SEC014",
+    "Title": "Improper Exception Handling",
+    "Description": "Exposing stack traces reveals sensitive system information.",
+    "Severity": "Warning",
+    "Detection": ["Exception details returned to user"],
+    "Message": "Do not expose internal exception details.",
+    "Fix": "Log internally, show generic message"
+  },
+  {
+    "RuleId": "SEC015",
+    "Title": "Missing Input Validation",
+    "Description": "Unvalidated input can lead to multiple injection vulnerabilities.",
+    "Severity": "Error",
+    "Detection": ["User input used without validation"],
+    "Message": "Validate all user inputs.",
+    "Fix": "Use validation frameworks or manual validation"
+  },
+  {
+    "RuleId": "SEC016",
+    "Title": "Insecure Cookie Configuration",
+    "Description": "Cookies without Secure/HttpOnly flags are vulnerable.",
+    "Severity": "Warning",
+    "Detection": ["Cookie without Secure or HttpOnly"],
+    "Message": "Set Secure and HttpOnly flags on cookies.",
+    "Fix": "Configure cookie options properly"
+  },
+  {
+    "RuleId": "SEC017",
+    "Title": "Exposed Sensitive Headers",
+    "Description": "Missing security headers increases attack surface.",
+    "Severity": "Warning",
+    "Detection": ["Missing headers like X-Content-Type-Options"],
+    "Message": "Add security headers.",
+    "Fix": "Configure headers in middleware"
+  },
+  {
+    "RuleId": "SEC018",
+    "Title": "Weak Password Policy",
+    "Description": "Weak password requirements increase risk of compromise.",
+    "Severity": "Warning",
+    "Detection": ["Short password length", "No complexity rules"],
+    "Message": "Enforce strong password policies.",
+    "Fix": "Require length, complexity, and expiration"
+  },
+  {
+    "RuleId": "SEC019",
+    "Title": "Unrestricted File Upload",
+    "Description": "Uploading files without validation can allow malicious files.",
+    "Severity": "Error",
+    "Detection": ["File upload without type/size validation"],
+    "Message": "Validate uploaded files.",
+    "Fix": "Restrict file types and size"
+  },
+  {
+    "RuleId": "SEC020",
+    "Title": "Sensitive Data in URL",
+    "Description": "Passing sensitive data in URL exposes it in logs and history.",
+    "Severity": "Error",
+    "Detection": ["Password/token in query string"],
+    "Message": "Do not send sensitive data in URL.",
+    "Fix": "Use POST body or headers"
+  },
+  {
+    "RuleId": "SEC021",
+    "Title": "Improper Authentication Handling",
+    "Description": "Weak authentication mechanisms increase risk of unauthorized access.",
+    "Severity": "Error",
+    "Detection": ["Custom auth logic without validation"],
+    "Message": "Use secure authentication frameworks.",
+    "Fix": "Use built-in authentication libraries"
+  },
+  {
+    "RuleId": "SEC022",
+    "Title": "Missing Authorization Checks",
+    "Description": "Access control not enforced properly.",
+    "Severity": "Error",
+    "Detection": ["Sensitive operation without role check"],
+    "Message": "Enforce proper authorization.",
+    "Fix": "Use role-based or policy-based authorization"
+  },
+  {
+    "RuleId": "SEC023",
+    "Title": "Use of Obsolete Security APIs",
+    "Description": "Using deprecated APIs can introduce vulnerabilities.",
+    "Severity": "Warning",
+    "Detection": ["Obsolete security API usage"],
+    "Message": "Avoid deprecated security APIs.",
+    "Fix": "Use modern alternatives"
+  },
+  {
+    "RuleId": "SEC024",
+    "Title": "Directory Listing Enabled",
+    "Description": "Exposing directory listing reveals sensitive files.",
+    "Severity": "Warning",
+    "Detection": ["Directory browsing enabled"],
+    "Message": "Disable directory listing.",
+    "Fix": "Configure server to disable listing"
+  },
+  {
+    "RuleId": "SEC025",
+    "Title": "Improper CORS Configuration",
+    "Description": "Allowing all origins can expose APIs to attacks.",
+    "Severity": "Error",
+    "Detection": ["AllowAnyOrigin in CORS"],
+    "Message": "Restrict allowed origins.",
+    "Fix": "Specify trusted domains"
+  },
+  {
+    "RuleId": "SEC026",
+    "Title": "Sensitive Data in Memory Without Protection",
+    "Description": "Sensitive data stored in memory without encryption is risky.",
+    "Severity": "Warning",
+    "Detection": ["Plain text sensitive data in variables"],
+    "Message": "Protect sensitive data in memory.",
+    "Fix": "Use secure strings or encryption"
+  },
+  {
+    "RuleId": "SEC027",
+    "Title": "Missing Rate Limiting",
+    "Description": "No rate limiting allows brute force or DoS attacks.",
+    "Severity": "Warning",
+    "Detection": ["No rate limiting on endpoints"],
+    "Message": "Implement rate limiting.",
+    "Fix": "Use middleware for throttling"
+  },
+  {
+    "RuleId": "SEC028",
+    "Title": "Unvalidated Redirect URL",
+    "Description": "Redirect URLs should be validated to prevent abuse.",
+    "Severity": "Warning",
+    "Detection": ["Redirect using query parameter"],
+    "Message": "Validate redirect URLs.",
+    "Fix": "Whitelist trusted URLs"
+  },
+  {
+    "RuleId": "SEC029",
+    "Title": "Exposure of Internal IP/Host Information",
+    "Description": "Leaking internal infrastructure details can aid attackers.",
+    "Severity": "Warning",
+    "Detection": ["Internal IP in response/log"],
+    "Message": "Do not expose internal infrastructure details.",
+    "Fix": "Mask or remove sensitive info"
+  },
+  {
+    "RuleId": "SEC030",
+    "Title": "Missing Secure Headers (HSTS)",
+    "Description": "HSTS prevents downgrade attacks.",
+    "Severity": "Warning",
+    "Detection": ["Missing Strict-Transport-Security header"],
+    "Message": "Enable HSTS header.",
+    "Fix": "Add HSTS configuration"
+  }
+]

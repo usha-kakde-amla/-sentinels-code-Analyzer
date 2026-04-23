@@ -1,0 +1,92 @@
+[
+  {
+    "RuleId": "JS_SEC001",
+    "Title": "Avoid Hardcoded Credentials",
+    "Description": "Hardcoding usernames, passwords, API keys, or tokens exposes sensitive data.",
+    "Severity": "Error",
+    "Detection": ["API key in string literal", "Hardcoded token", "Secret inside source code"],
+    "Message": "Sensitive credentials must not be hardcoded.",
+    "Fix": "Use environment variables or secret managers."
+  },
+  {
+    "RuleId": "JS_SEC002",
+    "Title": "Avoid eval() Usage",
+    "Description": "eval() executes arbitrary code and allows code injection attacks.",
+    "Severity": "Error",
+    "Detection": ["eval(", "new Function("],
+    "Message": "Avoid dynamic code execution.",
+    "Fix": "Use safe parsing or predefined logic."
+  },
+  {
+    "RuleId": "JS_SEC003",
+    "Title": "Prevent XSS via innerHTML",
+    "Description": "Using innerHTML with unsanitized input can cause Cross-Site Scripting attacks.",
+    "Severity": "Error",
+    "Detection": ["innerHTML =", "dangerouslySetInnerHTML"],
+    "Message": "Unsanitized HTML assignment detected.",
+    "Fix": "Use textContent or sanitize input."
+  },
+  {
+    "RuleId": "JS_SEC004",
+    "Title": "Avoid SQL Injection",
+    "Description": "Dynamic SQL queries built using user input are vulnerable.",
+    "Severity": "Error",
+    "Detection": ["query + userInput", "raw SQL concatenation"],
+    "Message": "Potential SQL Injection vulnerability.",
+    "Fix": "Use parameterized queries or ORM prepared statements."
+  },
+  {
+    "RuleId": "JS_SEC005",
+    "Title": "Avoid Command Injection",
+    "Description": "Passing user input into system commands may execute malicious instructions.",
+    "Severity": "Error",
+    "Detection": ["child_process.exec", "exec(", "spawn("],
+    "Message": "Possible command injection detected.",
+    "Fix": "Validate inputs or use argument arrays."
+  },
+  {
+    "RuleId": "JS_PERF001",
+    "Title": "Avoid Blocking Loops",
+    "Description": "Large synchronous loops block the event loop.",
+    "Severity": "Warning",
+    "Detection": ["while(true)", "for(;;)"],
+    "Message": "Blocking operation detected.",
+    "Fix": "Use async processing or batching."
+  },
+  {
+    "RuleId": "JS_PERF002",
+    "Title": "Unawaited Promise",
+    "Description": "Promises not awaited may cause race conditions.",
+    "Severity": "Warning",
+    "Detection": ["async function call without await"],
+    "Message": "Promise execution not awaited.",
+    "Fix": "Use await or handle promise properly."
+  },
+  {
+    "RuleId": "JS_PERF003",
+    "Title": "Memory Leak via Event Listeners",
+    "Description": "Event listeners not removed cause memory leaks.",
+    "Severity": "Warning",
+    "Detection": ["addEventListener without removeEventListener"],
+    "Message": "Possible memory leak detected.",
+    "Fix": "Remove listeners during cleanup."
+  },
+  {
+    "RuleId": "JS_PERF004",
+    "Title": "Console Logging in Production",
+    "Description": "Console logs reduce performance and expose internal data.",
+    "Severity": "Info",
+    "Detection": ["console.log(", "console.debug("],
+    "Message": "Console logging detected.",
+    "Fix": "Remove logs or use logging framework."
+  },
+  {
+    "RuleId": "JS_PERF005",
+    "Title": "Repeated API Calls",
+    "Description": "Multiple identical API requests waste resources.",
+    "Severity": "Warning",
+    "Detection": ["fetch inside loop", "axios call inside loop"],
+    "Message": "Repeated network calls detected.",
+    "Fix": "Cache responses or debounce requests."
+  }
+]

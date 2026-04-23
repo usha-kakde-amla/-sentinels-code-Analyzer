@@ -1,0 +1,137 @@
+[
+  {
+    "RuleId": "CSHTML001",
+    "Title": "Avoid Inline JavaScript in Views",
+    "Description": "Embedding JavaScript directly inside .cshtml files reduces maintainability, breaks separation of concerns, and increases debugging complexity.",
+    "Severity": "MAJOR",
+    "Detection": "Detect <script> tags or inline JavaScript inside .cshtml files.",
+    "Message": "Avoid inline JavaScript in Razor views.",
+    "Fix": "Move JavaScript logic to external .js files and reference them via script tags."
+  },
+  {
+    "RuleId": "CSHTML002",
+    "Title": "Avoid Inline CSS Styling",
+    "Description": "Inline CSS leads to poor maintainability and prevents reuse of styles across the application.",
+    "Severity": "MINOR",
+    "Detection": "Detect style attributes or <style> blocks in .cshtml files.",
+    "Message": "Avoid inline CSS styling.",
+    "Fix": "Use external CSS files or shared stylesheets."
+  },
+  {
+    "RuleId": "CSHTML003",
+    "Title": "Business Logic in View",
+    "Description": "Embedding business logic in Razor views violates MVC architecture and makes code difficult to maintain.",
+    "Severity": "CRITICAL",
+    "Detection": "Detect complex @if, loops with logic, or service/database calls in .cshtml.",
+    "Message": "Do not include business logic in views.",
+    "Fix": "Move logic to Controller or Service layer."
+  },
+  {
+    "RuleId": "CSHTML004",
+    "Title": "Unencoded Output (XSS Risk)",
+    "Description": "Rendering raw HTML or unencoded user input can lead to Cross-Site Scripting (XSS) vulnerabilities.",
+    "Severity": "BLOCKER",
+    "Detection": "Detect usage of @Html.Raw or unencoded output rendering.",
+    "Message": "Avoid rendering unencoded user input.",
+    "Fix": "Use default Razor encoding or sanitize input before rendering."
+  },
+  {
+    "RuleId": "CSHTML005",
+    "Title": "Overuse of ViewBag/ViewData",
+    "Description": "Using ViewBag/ViewData reduces type safety and increases runtime errors.",
+    "Severity": "MAJOR",
+    "Detection": "Detect usage of ViewBag or ViewData instead of strongly typed models.",
+    "Message": "Avoid ViewBag/ViewData for passing data.",
+    "Fix": "Use strongly typed models with @model directive."
+  },
+  {
+    "RuleId": "CSHTML006",
+    "Title": "Large View File Size",
+    "Description": "Large CSHTML files are hard to maintain and indicate poor component separation.",
+    "Severity": "MINOR",
+    "Detection": "Detect .cshtml files exceeding size/line threshold (e.g., >500 lines).",
+    "Message": "View file is too large.",
+    "Fix": "Split into partial views or components."
+  },
+  {
+    "RuleId": "CSHTML007",
+    "Title": "Missing Anti-Forgery Token",
+    "Description": "Forms without anti-forgery tokens are vulnerable to CSRF attacks.",
+    "Severity": "BLOCKER",
+    "Detection": "Detect <form> elements without @Html.AntiForgeryToken().",
+    "Message": "Missing anti-forgery token.",
+    "Fix": "Add @Html.AntiForgeryToken() inside forms."
+  },
+  {
+    "RuleId": "CSHTML008",
+    "Title": "Hardcoded URLs",
+    "Description": "Hardcoding URLs breaks routing flexibility and maintainability.",
+    "Severity": "MINOR",
+    "Detection": "Detect hardcoded links (href=\"/something\").",
+    "Message": "Avoid hardcoded URLs.",
+    "Fix": "Use Url.Action() or tag helpers."
+  },
+  {
+    "RuleId": "CSHTML009",
+    "Title": "Improper Use of Partial Views",
+    "Description": "Not using partial views for reusable UI leads to duplication and inconsistencies.",
+    "Severity": "MINOR",
+    "Detection": "Detect repeated HTML blocks across views.",
+    "Message": "Use partial views for reusable UI.",
+    "Fix": "Create and reuse partial views."
+  },
+  {
+    "RuleId": "CSHTML010",
+    "Title": "Client-Side Validation Missing",
+    "Description": "Forms without client-side validation degrade user experience and increase server load.",
+    "Severity": "MAJOR",
+    "Detection": "Detect forms without validation attributes or scripts.",
+    "Message": "Missing client-side validation.",
+    "Fix": "Enable validation scripts and attributes."
+  },
+  {
+    "RuleId": "CSHTML011",
+    "Title": "Improper Script Loading",
+    "Description": "Loading scripts in the head instead of footer affects page performance.",
+    "Severity": "MINOR",
+    "Detection": "Detect script tags in <head> instead of bottom.",
+    "Message": "Scripts should be loaded at the bottom.",
+    "Fix": "Move scripts before closing </body>."
+  },
+  {
+    "RuleId": "CSHTML012",
+    "Title": "Mixed Concerns in Razor Blocks",
+    "Description": "Mixing UI rendering and data processing inside Razor blocks leads to poor readability.",
+    "Severity": "MAJOR",
+    "Detection": "Detect heavy logic inside @{ } blocks.",
+    "Message": "Avoid mixing logic with UI.",
+    "Fix": "Move logic to backend."
+  },
+  {
+    "RuleId": "CSHTML013",
+    "Title": "Improper Model Null Handling",
+    "Description": "Accessing model properties without null checks can cause runtime exceptions.",
+    "Severity": "CRITICAL",
+    "Detection": "Detect direct model property access without null check.",
+    "Message": "Model may be null.",
+    "Fix": "Add null checks before accessing properties."
+  },
+  {
+    "RuleId": "CSHTML014",
+    "Title": "Unoptimized Image Loading",
+    "Description": "Large or unoptimized images impact page performance.",
+    "Severity": "MINOR",
+    "Detection": "Detect large image sizes or missing lazy loading.",
+    "Message": "Images are not optimized.",
+    "Fix": "Use compressed images and lazy loading."
+  },
+  {
+    "RuleId": "CSHTML015",
+    "Title": "Accessibility Violations",
+    "Description": "Missing alt tags or improper semantic HTML affects accessibility compliance.",
+    "Severity": "MAJOR",
+    "Detection": "Detect missing alt attributes or improper HTML structure.",
+    "Message": "Accessibility issues detected.",
+    "Fix": "Add alt tags and use semantic HTML."
+  }
+]

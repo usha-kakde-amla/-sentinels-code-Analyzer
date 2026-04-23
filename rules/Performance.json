@@ -1,0 +1,117 @@
+[
+  {
+    "RuleId": "PERF101",
+    "Title": "Avoid Database Calls Inside Loops",
+    "Description": "Executing database calls inside loops (especially nested loops) leads to severe performance issues due to repeated I/O operations.",
+    "Severity": "Error",
+    "Detection": [
+      "DB call inside for/foreach loop",
+      "Nested loop with DB/API call"
+    ],
+    "Message": "Avoid database/API calls inside loops. Fetch data in bulk before the loop.",
+    "Fix": "Move database call outside loop and use bulk fetch or join queries"
+  },
+  {
+    "RuleId": "PERF102",
+    "Title": "Avoid Large Session Objects",
+    "Description": "Storing large objects in session increases memory usage and slows down read/write operations, potentially causing request state issues.",
+    "Severity": "Warning",
+    "Detection": [
+      "Large object stored in Session",
+      "Session storing collections or heavy objects"
+    ],
+    "Message": "Avoid storing large data in Session. Keep session lightweight.",
+    "Fix": "Store only necessary identifiers (e.g., IDs) and fetch data when needed"
+  },
+  {
+    "RuleId": "PERF103",
+    "Title": "Cache Frequent API Calls",
+    "Description": "Repeated API calls degrade performance. Frequently accessed data should be cached.",
+    "Severity": "Info",
+    "Detection": [
+      "Repeated API call pattern",
+      "Same API called multiple times"
+    ],
+    "Message": "Cache frequently used API responses to improve performance.",
+    "Fix": "Use in-memory caching or distributed caching (e.g., MemoryCache)"
+  },
+  {
+    "RuleId": "PERF104",
+    "Title": "Optimize LINQ Query Order",
+    "Description": "When querying large datasets, filtering should be applied before projection to reduce data processing.",
+    "Severity": "Warning",
+    "Detection": [
+      "Select before Where in LINQ on large dataset"
+    ],
+    "Message": "Apply Where before Select for better performance on large datasets.",
+    "Fix": "Reorder LINQ query: Where \u2192 Select"
+  },
+  {
+    "RuleId": "PERF105",
+    "Title": "Avoid Repeated API or Function Calls",
+    "Description": "Calling the same API or function multiple times unnecessarily increases execution time.",
+    "Severity": "Warning",
+    "Detection": [
+      "Same method/API called multiple times with same parameters"
+    ],
+    "Message": "Avoid repeated calls. Store result and reuse.",
+    "Fix": "Store result in a variable or cache"
+  },
+  {
+    "RuleId": "PERF106",
+    "Title": "Improve User Interaction Responsiveness (INP)",
+    "Description": "User actions should provide immediate feedback (e.g., loader) to improve perceived performance and Interaction to Next Paint (INP).",
+    "Severity": "Info",
+    "Detection": [
+      "Button click without UI feedback",
+      "No loader/spinner on async action"
+    ],
+    "Message": "Provide immediate UI feedback (loader/spinner) on user actions.",
+    "Fix": "Show loader/spinner before starting async operation"
+  },
+  {
+    "RuleId": "PERF107",
+    "Title": "Avoid Deserialization Inside Loops",
+    "Description": "Repeated deserialization inside loops causes high CPU and memory overhead.",
+    "Severity": "Warning",
+    "Detection": [
+      "Deserialization inside loop (e.g., JSON/XML parsing)"
+    ],
+    "Message": "Avoid deserialization inside loops. Deserialize once and reuse.",
+    "Fix": "Move deserialization logic outside loop"
+  },
+  {
+    "RuleId": "PERF108",
+    "Title": "Use Count Property Instead of Count()",
+    "Description": "Using Count() on collections enumerates them, while Count property is faster.",
+    "Severity": "Info",
+    "Detection": [
+      "Collection.Count() used instead of Count property"
+    ],
+    "Message": "Use Count property instead of Count() method.",
+    "Fix": "Replace Count() with Count"
+  },
+  {
+    "RuleId": "PERF109",
+    "Title": "Use Parallel.ForEach for Parallelizable Work",
+    "Description": "Tasks that can be executed in parallel should use Parallel.ForEach to improve performance on multi-core processors.",
+    "Severity": "Info",
+    "Detection": [
+      "Foreach loop can be parallelized",
+      "Independent iterations detected"
+    ],
+    "Message": "Use Parallel.ForEach for work that can be done in parallel.",
+    "Fix": "Replace foreach with Parallel.ForEach where iterations are independent"
+  },
+  {
+    "RuleId": "PERF110",
+    "Title": "Use Task.Run for Fire-and-Forget API Calls",
+    "Description": "API calls or tasks that can run independently should be executed using Task.Run to avoid blocking the main thread.",
+    "Severity": "Info",
+    "Detection": [
+      "Long-running API or non-critical task executed synchronously"
+    ],
+    "Message": "Run non-critical or independent tasks using Task.Run to improve responsiveness.",
+    "Fix": "Wrap the call in Task.Run and handle exceptions appropriately"
+  }
+]

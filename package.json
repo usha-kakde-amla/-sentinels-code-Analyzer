@@ -1,0 +1,204 @@
+{
+  "name": "sentinels",
+  "displayName": "Sentinels",
+  "description": "Real-time code validation for .cs, .sql, .ts, .js, .cshtml files with AI-powered auto-fix.",
+  "version": "3.2.0",
+  "publisher": "sentinels-publisher",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/sentinels"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "icon": "icon.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sentinels.refreshRules",
+        "title": "Sentinels: Refresh Rules from Server"
+      },
+      {
+        "command": "sentinels.validateNow",
+        "title": "Sentinels: Validate Current File Now"
+      },
+      {
+        "command": "sentinels.showPanel",
+        "title": "Sentinels: Show Validation Panel"
+      },
+      {
+        "command": "sentinels.resolveWithAI",
+        "title": "Sentinels: Resolve with AI"
+      }
+    ],
+    "configuration": {
+      "title": "Sentinels",
+      "properties": {
+        "sentinels.serverUrl": {
+          "type": "string",
+          "default": "http://172.30.104.55",
+          "description": "Base URL of the remote server hosting JSON rule files."
+        },
+        "sentinels.ruleFiles": {
+          "type": "array",
+          "default": [
+            "Security.json",
+            "Vulnerability.json",
+            "Performance.json",
+            "SQL.json",
+            "Typescript.json",
+            "Javascript.json",
+            "CSHTML.json"
+          ],
+          "description": "JSON rule files to fetch from the server."
+        },
+        "sentinels.refreshIntervalMinutes": {
+          "type": "number",
+          "default": 30,
+          "description": "How often (in minutes) to refresh rules from the server."
+        },
+        "sentinels.validateOnType": {
+          "type": "boolean",
+          "default": true,
+          "description": "Validate code as you type (with debounce)."
+        },
+        "sentinels.debounceMs": {
+          "type": "number",
+          "default": 800,
+          "description": "Milliseconds to wait after typing before re-validating."
+        },
+        "sentinels.ai.provider": {
+          "type": "string",
+          "default": "gemini",
+          "enum": [
+            "none",
+            "groq",
+            "openai",
+            "gemini",
+            "ollama"
+          ],
+          "enumDescriptions": [
+            "No AI provider selected",
+            "Groq (llama3, mixtral) \u2014 fast and free tier available",
+            "OpenAI (GPT-4o, GPT-3.5-turbo)",
+            "Google Gemini (gemini-2.5-flash, gemini-1.5-pro) \u2014 recommended",
+            "Ollama (local, no API key needed)"
+          ],
+          "description": "AI provider to use for the Resolve with AI feature."
+        },
+        "sentinels.ai.groqApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your Groq API key. Get one free at https://console.groq.com"
+        },
+        "sentinels.ai.groqModel": {
+          "type": "string",
+          "default": "llama-3.3-70b-versatile",
+          "enum": [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-70b-versatile",
+            "llama-3.1-8b-instant",
+            "llama3-8b-8192",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it",
+            "llama-3.3-70b-specdec",
+            "llama-3.2-90b-vision-preview",
+            "llama-3.2-11b-vision-preview",
+            "llama-3.2-3b-preview",
+            "llama-3.2-1b-preview"
+          ],
+          "enumDescriptions": [
+            "Llama 3.3 70B Versatile (RECOMMENDED - latest)",
+            "Llama 3.1 70B Versatile",
+            "Llama 3.1 8B Instant (fastest)",
+            "Llama 3 8B (legacy)",
+            "Mixtral 8x7B 32K context",
+            "Gemma 2 9B",
+            "Llama 3.3 70B SpecDec",
+            "Llama 3.2 90B Vision",
+            "Llama 3.2 11B Vision",
+            "Llama 3.2 3B Preview",
+            "Llama 3.2 1B Preview"
+          ],
+          "description": "Groq model to use. llama-3.3-70b-versatile is the latest recommended model."
+        },
+        "sentinels.ai.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your OpenAI API key. Get one at https://platform.openai.com"
+        },
+        "sentinels.ai.openaiModel": {
+          "type": "string",
+          "default": "gpt-4o",
+          "enum": [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "gpt-3.5-turbo"
+          ],
+          "description": "OpenAI model to use."
+        },
+        "sentinels.ai.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your Google Gemini API key. Get one free at https://aistudio.google.com/apikey"
+        },
+        "sentinels.ai.geminiModel": {
+          "type": "string",
+          "default": "gemini-2.5-flash",
+          "enum": [
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-preview-04-17",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro"
+          ],
+          "enumDescriptions": [
+            "Gemini 2.5 Flash (RECOMMENDED — latest, fast & smart)",
+            "Gemini 2.5 Flash Preview 04-17",
+            "Gemini 2.0 Flash",
+            "Gemini 1.5 Flash (legacy)",
+            "Gemini 1.5 Pro (legacy, slower)"
+          ],
+          "description": "Gemini model to use. gemini-2.5-flash is the latest recommended model."
+        },
+        "sentinels.ai.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama server URL (local). Default: http://localhost:11434"
+        },
+        "sentinels.ai.ollamaModel": {
+          "type": "string",
+          "default": "llama3",
+          "description": "Ollama model name (e.g. llama3, codellama, mistral)."
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "sentinels.validateNow",
+          "group": "sentinels"
+        },
+        {
+          "command": "sentinels.resolveWithAI",
+          "group": "sentinels"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^2.22.0"
+  }
+}

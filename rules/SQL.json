@@ -1,0 +1,101 @@
+[
+  {
+    "RuleId": "TSQL001",
+    "Title": "Avoid SELECT *",
+    "Description": "Using SELECT * reduces readability, increases coupling to schema changes, and may impact performance.",
+    "Severity": "MAJOR",
+    "Detection": "Detect queries using SELECT *.",
+    "Message": "Avoid using SELECT *. Specify only required columns.",
+    "Fix": "Replace SELECT * with explicit column names."
+  },
+  {
+    "RuleId": "TSQL002",
+    "Title": "Enforce Naming Conventions",
+    "Description": "Stored procedures, variables, and parameters should follow standard naming conventions.",
+    "Severity": "MINOR",
+    "Detection": "Detect object names not following standard naming conventions.",
+    "Message": "Follow consistent naming conventions for database objects.",
+    "Fix": "Rename objects to follow standards (e.g., usp_GetOrdersByCustomer)."
+  },
+  {
+    "RuleId": "TSQL003",
+    "Title": "High Cognitive Complexity",
+    "Description": "Procedures with deeply nested logic are difficult to maintain and understand.",
+    "Severity": "MAJOR",
+    "Detection": "Detect stored procedures with nesting/complexity above threshold (e.g., >15).",
+    "Message": "Reduce cognitive complexity by simplifying logic.",
+    "Fix": "Refactor procedure into smaller, simpler units."
+  },
+  {
+    "RuleId": "TSQL004",
+    "Title": "Missing TRY CATCH Error Handling",
+    "Description": "Data modification logic should be wrapped in TRY...CATCH blocks to handle runtime errors safely.",
+    "Severity": "CRITICAL",
+    "Detection": "Detect DML statements not enclosed in TRY...CATCH.",
+    "Message": "Wrap DML operations inside TRY...CATCH blocks.",
+    "Fix": "Add TRY...CATCH around DML statements."
+  },
+  {
+    "RuleId": "TSQL005",
+    "Title": "Check @@ROWCOUNT After DML",
+    "Description": "DML operations should verify affected row counts to avoid unexpected behavior.",
+    "Severity": "MAJOR",
+    "Detection": "Detect DML operations without @@ROWCOUNT validation.",
+    "Message": "Validate affected rows using @@ROWCOUNT.",
+    "Fix": "Add IF @@ROWCOUNT check after DML operations."
+  },
+  {
+    "RuleId": "TSQL006",
+    "Title": "Avoid Dynamic SQL Without Parameters",
+    "Description": "Dynamic SQL concatenated with user input opens the door to SQL Injection attacks.",
+    "Severity": "BLOCKER",
+    "Detection": "Detect dynamic SQL using string concatenation with variables.",
+    "Message": "Use parameterized queries instead of concatenated dynamic SQL.",
+    "Fix": "Use sp_executesql with parameters."
+  },
+  {
+    "RuleId": "TSQL007",
+    "Title": "Unsafe EXEC With User Input",
+    "Description": "EXEC statements should never execute user-controlled input directly.",
+    "Severity": "BLOCKER",
+    "Detection": "Detect EXEC statements with user input.",
+    "Message": "Avoid executing user-controlled input directly.",
+    "Fix": "Validate and parameterize inputs before execution."
+  },
+  {
+    "RuleId": "TSQL008",
+    "Title": "Non-SARGable Predicates",
+    "Description": "Functions on indexed columns prevent efficient index use.",
+    "Severity": "MAJOR",
+    "Detection": "Detect functions applied on indexed columns in WHERE clause.",
+    "Message": "Avoid non-SARGable predicates for better performance.",
+    "Fix": "Rewrite predicates to use index-friendly conditions."
+  },
+  {
+    "RuleId": "TSQL009",
+    "Title": "Avoid Cursor Usage",
+    "Description": "Set-based operations are preferred over cursors for performance and scalability.",
+    "Severity": "MAJOR",
+    "Detection": "Detect usage of CURSOR in SQL code.",
+    "Message": "Avoid cursors; use set-based operations.",
+    "Fix": "Refactor logic using set-based queries."
+  },
+  {
+    "RuleId": "TSQL010",
+    "Title": "Use of Elevated Execution Context",
+    "Description": "EXECUTE AS and elevated permissions must be manually reviewed.",
+    "Severity": "CRITICAL",
+    "Detection": "Detect EXECUTE AS usage.",
+    "Message": "Review usage of elevated execution context.",
+    "Fix": "Ensure least privilege principle is followed."
+  },
+  {
+    "RuleId": "TSQL011",
+    "Title": "Sensitive Data Access",
+    "Description": "Accessing sensitive columns should be reviewed for encryption and masking compliance.",
+    "Severity": "MAJOR",
+    "Detection": "Detect queries accessing sensitive columns (e.g., CreditCardNumber).",
+    "Message": "Sensitive data access should be secured.",
+    "Fix": "Apply encryption, masking, or access controls."
+  }
+]
