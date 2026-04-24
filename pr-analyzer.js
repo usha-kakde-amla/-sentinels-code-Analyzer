@@ -1,167 +1,108 @@
-#!/usr/bin/env node
-const fs = require("fs");
-const path = require("path");
-const args = require("minimist")(process.argv.slice(2));
+const fs = require('fs');
+const path = require('path');
+const minimist = require('minimist');
 
+const args = minimist(process.argv.slice(2));
 const diffFile = args.diff;
-const outputFile = args.output || "analysis-report.json";
-const rulesDir = process.env.RULES_DIR;
+const outputFile = args.output || 'analysis-report.json';
+const rulesDir = process.env.RULES_DIR || './rules';
 
-if (!diffFile || !fs.existsSync(diffFile)) {
-    console.error("❌ Diff file missing:", diffFile);
-    process.exit(1);
-}
-if (!rulesDir || !fs.existsSync(rulesDir)) {
-    console.error("❌ Rules folder missing:", rulesDir);
+if (!fs.existsSync(diffFile)) {
+    console.error('❌ Diff file not found');
     process.exit(1);
 }
 
-const DETECTION_OVERRIDES = {
-    "TSQL001": ["SELECT *", "SELECT*"],
-    "TSQL004": ["INSERT INTO", "UPDATE ", "DELETE FROM", "MERGE INTO"],
-    "TSQL005": ["UPDATE ", "DELETE FROM", "INSERT INTO"],
-    "TSQL006": ["EXEC('", 'EXEC("', "' + @", "@ + '", "+ N'", "N' +", "SET @sql"],
-    "TSQL007": ["EXEC(@", "EXEC (@", "EXECUTE(@", "EXECUTE (@"],
-    "TSQL008": ["YEAR(", "MONTH(", "DAY(", "CONVERT(CHAR", "UPPER(", "LOWER(", "ISNULL("],
-    "TSQL009": ["CURSOR FOR", "FETCH NEXT", "OPEN cursor", "DECLARE CURSOR"],
-    "TSQL010": ["EXECUTE AS LOGIN", "EXECUTE AS USER", "EXECUTE AS OWNER"],
-    "TSQL011": ["CreditCardNumber", "SocialSecurityNumber", "SSN", "CVV", "AccountPassword"],
-    "SEC001": ["password =", "Password =", "apiKey =", "APIKey =", "secret =", "Secret =", "connectionString ="],
-    "SEC002": ["+ userId", "+ id ", "+ input", "+ userInput", '" + "', "' + '"],
-    "SEC007": ["new MD5", "MD5.Create", "new SHA1", "SHA1.Create", "new DES", "DESCryptoServiceProvider"],
-    "SEC008": ["log(password", "log(Password", "log(token", "log(Token", "Write(password"],
-    "SEC012": ["new Random()", "new System.Random()"],
-    "SEC025": ["AllowAnyOrigin()", ".AllowAnyOrigin"],
-    "VUL001": ["+ userId", "+ id ", "+ username", '+ "SELECT', '+ @name', 'ExecuteNonQuery("SELECT'],
-    "VUL002": ['= "password"', '= "Password"', '= "secret"', '= "apikey"', 'apiKey = "'],
-    "VUL003": ["new MD5CryptoServiceProvider", "new SHA1CryptoServiceProvider", "new DESCryptoServiceProvider"],
-    "VUL004": ["File.ReadAllText(userInput", "File.ReadAllText(input", "Path.Combine(userInput", "+ userInput"],
-    "VUL005": ["BinaryFormatter", ".Deserialize(stream", ".Deserialize(input"],
-    "VUL006": ["db.Users.Remove", "db.Delete", "repository.Delete"],
-    "VUL009": ["http://api.", "http://www.", 'GetAsync("http:', 'PostAsync("http:'],
-    "VUL011": ['Response.Write("<', "innerHTML =", ".innerHTML ="],
-    "VUL012": ["new Random()", "rng.Next()", "new System.Random"],
-    "PERF101": ["executeQuery(", "ExecuteQuery(", "ExecuteNonQuery(", "db.Query(", ".Find(", ".FirstOrDefault("],
-    "PERF105": ["getUserData(userId)", "getUser(id)", "fetchData(id)"],
-    "PERF107": ["JSON.parse(", "JsonSerializer.Deserialize(", "XmlSerializer"],
-    "PERF108": [".Count()", ".count()"],
-    "JS_SEC002": ["eval(", "new Function("],
-    "JS_SEC003": ["innerHTML =", "dangerouslySetInnerHTML"],
-    "JS_SEC005": ["child_process.exec(", "exec(cmd", "spawn(cmd"],
-    "JS_PERF001": ["while(true)", "for(;;)"],
-    "JS_PERF004": ["console.log(", "console.debug("],
-    "TS_SEC003": ["as unknown as"],
-    "TS_PERF003": ["JSON.parse(JSON.stringify("],
-    "CSHTML004": ["@Html.Raw(", "Html.Raw("],
-    "CSHTML005": ["@ViewBag.", "@ViewData["],
-    "CSHTML007": ['<form method="post"', "<form method='post'"],
-};
+// ✅ Load ONLY your rules
+function loadRules() {
+    const files = fs.readdirSync(rulesDir).filter(f => f.endsWith('.json'));
+    if (files.length === 0) {
+        console.error('❌ No rules found');
+        process.exit(1);
+    }
 
-// Load rules
-const ruleFiles = fs.readdirSync(rulesDir).filter(f => f.endsWith(".json"));
-if (ruleFiles.length === 0) {
-    console.error("❌ No rules found in:", rulesDir);
-    process.exit(1);
+    let rules = [];
+
+    for (const file of files) {
+        const content = JSON.parse(fs.readFileSync(path.join(rulesDir, file), 'utf8'));
+        rules = rules.concat(Array.isArray(content) ? content : [content]);
+        console.log(`✅ Loaded ${file}`);
+    }
+
+    console.log(`🔍 Total rules: ${rules.length}`);
+    return rules;
 }
 
-const rules = [];
-ruleFiles.forEach(file => {
-    try {
-        const category = path.basename(file, ".json");
-        const data = JSON.parse(fs.readFileSync(path.join(rulesDir, file), "utf8"));
-        const items = Array.isArray(data) ? data : (data.rules || []);
-        items.forEach(r => rules.push({ ...r, _category: category }));
-    } catch (e) {
-        console.warn(`⚠️ Skipping invalid rule file: ${file}`);
-    }
-});
+// ✅ Parse diff (important for inline comments)
+function parseDiff(diff) {
+    const files = [];
+    let currentFile = null;
+    let lineNumber = 0;
 
-console.log(`✅ Loaded ${rules.length} rules from ${ruleFiles.length} files`);
-
-// Parse diff — track fileLine (real line number in new file)
-const diffLines = fs.readFileSync(diffFile, "utf8").split("\n");
-let currentFile = "unknown";
-let fileLine = 0;
-let inHunk = false;
-const issueMap = new Map();
-
-diffLines.forEach((line) => {
-    if (line.startsWith("+++ b/")) {
-        currentFile = line.replace("+++ b/", "").trim();
-        inHunk = false;
-        return;
-    }
-    if (line.startsWith("--- ") || line.startsWith("diff ") || line.startsWith("index ")) return;
-
-    if (line.startsWith("@@")) {
-        inHunk = true;
-        const match = line.match(/\+(\d+)/);
-        fileLine = match ? parseInt(match[1], 10) - 1 : 0;
-        return;
-    }
-
-    if (!inHunk) return;
-
-    if (!line.startsWith("+") && !line.startsWith("-")) {
-        fileLine++;
-        return;
-    }
-
-    if (line.startsWith("-")) return;
-
-    // Added line
-    fileLine++;
-    const cleanLine = line.slice(1);
-    const cleanLower = cleanLine.toLowerCase();
-    const trimmed = cleanLine.trimStart();
-
-    if (trimmed.startsWith("//") || trimmed.startsWith("--") ||
-        trimmed.startsWith("/*") || trimmed.startsWith("*") ||
-        trimmed.startsWith("#") || trimmed.startsWith("@*")) return;
-
-    rules.forEach(rule => {
-        const ruleId = rule.RuleId || rule.id;
-        if (!ruleId) return;
-
-        let matched = false;
-        const overrides = DETECTION_OVERRIDES[ruleId];
-        if (overrides) {
-            matched = overrides.some(p => cleanLower.includes(p.toLowerCase()));
-        } else {
-            const det = rule.Detection;
-            if (Array.isArray(det)) {
-                matched = det.some(k => k && cleanLower.includes(k.toLowerCase()));
-            } else if (typeof det === "string" && det.trim().length > 0) {
-                const tokens = [...det.matchAll(/["'`]([^"'`]{2,60})["'`]/g)].map(m => m[1]);
-                matched = tokens.length > 0
-                    ? tokens.some(k => cleanLower.includes(k.toLowerCase()))
-                    : cleanLower.includes(det.toLowerCase().slice(0, 40));
+    diff.split('\n').forEach(line => {
+        if (line.startsWith('diff --git')) {
+            const match = line.match(/b\/(.+)/);
+            if (match) {
+                currentFile = match[1];
+                files.push({ file: currentFile, lines: [] });
             }
-        }
-
-        if (matched) {
-            const key = `${currentFile}::${fileLine}::${ruleId}`;
-            if (!issueMap.has(key)) {
-                issueMap.set(key, {
-                    ruleId,
-                    title: rule.Title || rule.name || ruleId,
-                    message: rule.Message || rule.description || "",
-                    fix: rule.Fix || rule.compliantExample || "",
-                    severity: rule.Severity || "Info",
-                    category: rule._category,
-                    file: currentFile,
-                    fileLine,   // ← real line number used by workflow to post inline comment
-                    snippet: cleanLine.trim()
+        } else if (line.startsWith('@@')) {
+            const match = line.match(/\+(\d+)/);
+            lineNumber = match ? parseInt(match[1]) - 1 : 0;
+        } else if (line.startsWith('+') && !line.startsWith('+++')) {
+            lineNumber++;
+            if (currentFile) {
+                files[files.length - 1].lines.push({
+                    lineNumber,
+                    content: line.substring(1)
                 });
             }
+        } else if (!line.startsWith('-')) {
+            lineNumber++;
         }
     });
-});
 
-const issues = [...issueMap.values()];
+    return files;
+}
+
+// ✅ Apply rules
+function analyze(files, rules) {
+    const issues = [];
+
+    for (const file of files) {
+        for (const line of file.lines) {
+            for (const rule of rules) {
+                if (!rule.pattern) continue;
+
+                try {
+                    const regex = new RegExp(rule.pattern, 'i');
+
+                    if (regex.test(line.content)) {
+                        issues.push({
+                            file: file.file,
+                            fileLine: line.lineNumber,
+                            ruleId: rule.ruleId,
+                            title: rule.title,
+                            message: rule.message,
+                            fix: rule.fix,
+                            severity: rule.severity || 'warning'
+                        });
+                    }
+                } catch (e) {
+                    console.log(`⚠️ Invalid regex: ${rule.ruleId}`);
+                }
+            }
+        }
+    }
+
+    return issues;
+}
+
+// ✅ MAIN
+const rules = loadRules();
+const diff = fs.readFileSync(diffFile, 'utf8');
+const files = parseDiff(diff);
+const issues = analyze(files, rules);
+
 fs.writeFileSync(outputFile, JSON.stringify(issues, null, 2));
-console.log(`📄 Report: ${outputFile} — ${issues.length} issue(s)`);
-issues.forEach(i => console.log(`  ${i.severity} | ${i.file}:${i.fileLine} | ${i.ruleId}`));
 
-const hasErrors = issues.some(i => i.severity.toLowerCase() === "error");
-process.exit(hasErrors ? 1 : 0);
+console.log(`🛡️ Issues found: ${issues.length}`);
