@@ -3,16 +3,10 @@ const fs = require("fs");
 const path = require("path");
 const args = require("minimist")(process.argv.slice(2));
 
-// ==========================
-// INPUTS
-// ==========================
 const diffFile = args.diff;
 const outputFile = args.output || "analysis-report.json";
 const rulesDir = process.env.RULES_DIR;
 
-// ==========================
-// VALIDATION
-// ==========================
 if (!diffFile || !fs.existsSync(diffFile)) {
     console.error("❌ Diff file missing:", diffFile);
     process.exit(1);
@@ -22,9 +16,6 @@ if (!rulesDir || !fs.existsSync(rulesDir)) {
     process.exit(1);
 }
 
-// ==========================
-// DETECTION OVERRIDES
-// ==========================
 const DETECTION_OVERRIDES = {
     "TSQL001": ["SELECT *", "SELECT*"],
     "TSQL004": ["INSERT INTO", "UPDATE ", "DELETE FROM", "MERGE INTO"],
@@ -66,9 +57,7 @@ const DETECTION_OVERRIDES = {
     "CSHTML007": ['<form method="post"', "<form method='post'"],
 };
 
-// ==========================
-// LOAD RULES
-// ==========================
+// Load rules
 const ruleFiles = fs.readdirSync(rulesDir).filter(f => f.endsWith(".json"));
 if (ruleFiles.length === 0) {
     console.error("❌ No rules found in:", rulesDir);
@@ -89,37 +78,23 @@ ruleFiles.forEach(file => {
 
 console.log(`✅ Loaded ${rules.length} rules from ${ruleFiles.length} files`);
 
-// ==========================
-// PARSE DIFF
-// Track per added line:
-//   fileLine     → real line number in the file  (shown in PR)
-//   diffPosition → position within the hunk      (GitHub Review API requires this)
-// ==========================
+// Parse diff — track fileLine (real line number in new file)
 const diffLines = fs.readFileSync(diffFile, "utf8").split("\n");
-
 let currentFile = "unknown";
 let fileLine = 0;
-let diffPosition = 0;
 let inHunk = false;
-
 const issueMap = new Map();
 
 diffLines.forEach((line) => {
-
-    // ── new file ─────────────────────────────────────────────────
     if (line.startsWith("+++ b/")) {
         currentFile = line.replace("+++ b/", "").trim();
-        diffPosition = 0;
         inHunk = false;
         return;
     }
-
     if (line.startsWith("--- ") || line.startsWith("diff ") || line.startsWith("index ")) return;
 
-    // ── hunk header  @@ -a,b +startLine,count @@ ─────────────────
     if (line.startsWith("@@")) {
         inHunk = true;
-        diffPosition++;
         const match = line.match(/\+(\d+)/);
         fileLine = match ? parseInt(match[1], 10) - 1 : 0;
         return;
@@ -127,16 +102,14 @@ diffLines.forEach((line) => {
 
     if (!inHunk) return;
 
-    diffPosition++;
-
     if (!line.startsWith("+") && !line.startsWith("-")) {
-        fileLine++;   // context line
+        fileLine++;
         return;
     }
 
-    if (line.startsWith("-")) return;   // removed line
+    if (line.startsWith("-")) return;
 
-    // ── added line ───────────────────────────────────────────────
+    // Added line
     fileLine++;
     const cleanLine = line.slice(1);
     const cleanLower = cleanLine.toLowerCase();
@@ -177,8 +150,7 @@ diffLines.forEach((line) => {
                     severity: rule.Severity || "Info",
                     category: rule._category,
                     file: currentFile,
-                    fileLine,        // real line number in file
-                    diffPosition,    // position in diff hunk (GitHub Review API)
+                    fileLine,   // ← real line number used by workflow to post inline comment
                     snippet: cleanLine.trim()
                 });
             }
@@ -187,15 +159,9 @@ diffLines.forEach((line) => {
 });
 
 const issues = [...issueMap.values()];
-
-// ==========================
-// SAVE REPORT
-// ==========================
 fs.writeFileSync(outputFile, JSON.stringify(issues, null, 2));
 console.log(`📄 Report: ${outputFile} — ${issues.length} issue(s)`);
+issues.forEach(i => console.log(`  ${i.severity} | ${i.file}:${i.fileLine} | ${i.ruleId}`));
 
-// ==========================
-// EXIT CODE
-// ==========================
 const hasErrors = issues.some(i => i.severity.toLowerCase() === "error");
 process.exit(hasErrors ? 1 : 0);
