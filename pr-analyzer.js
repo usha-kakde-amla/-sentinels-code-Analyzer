@@ -70,14 +70,15 @@ function loadRules(rulesDir) {
 }
 
 function validateRule(rule, sourceFile) {
-    const required = ['id', 'title', 'severity', 'message', 'fix'];
+    // Your schema uses: RuleId, Title, Severity, Message, Fix, Detection
+    const required = ['RuleId', 'Title', 'Severity', 'Message', 'Fix'];
     for (const field of required) {
         if (!rule[field]) {
             throw new Error(`Rule in ${sourceFile} is missing required field: "${field}"`);
         }
     }
-    if (!['error', 'warning', 'info'].includes(rule.severity.toLowerCase())) {
-        throw new Error(`Rule "${rule.id}" severity must be error|warning|info`);
+    if (!['error', 'warning', 'info'].includes(rule.Severity.toLowerCase())) {
+        throw new Error(`Rule "${rule.RuleId}" Severity must be Error|Warning|Info`);
     }
 }
 
@@ -145,28 +146,35 @@ function buildPrompt(rules, addedLines) {
     return `You are a strict code review enforcement engine.
 
 You will be given:
-1. A list of CUSTOM RULES defined by the team.
-2. The added lines from a pull request diff (each line prefixed with its file name and line number).
+1. A list of CUSTOM RULES defined by the team. Each rule has:
+   - RuleId: unique rule identifier
+   - Title: short label
+   - Severity: Error | Warning | Info
+   - Description: what the rule checks
+   - Detection: list of patterns/scenarios that indicate a violation
+   - Message: what to tell the developer
+   - Fix: how to fix the violation
+2. The added lines from a pull request diff (each prefixed with file name and line number).
 
 YOUR ONLY JOB:
-- Check each added line against the provided custom rules.
+- Use the "Detection" hints in each rule to identify violations in the added lines.
 - Report ONLY violations of the exact rules listed below.
 - Do NOT suggest improvements, best practices, or any issues not covered by the rules.
-- Do NOT add commentary, explanations, or extra fields beyond what is specified.
-- Do NOT invent new rule IDs or issues that are not in the rules list.
+- Do NOT add commentary, explanations, or extra fields.
+- Do NOT invent new RuleIds or issues not in the rules list.
 - If a line does not violate any rule, ignore it completely.
 
 OUTPUT FORMAT:
 Return ONLY a valid JSON array. No markdown, no code fences, no extra text — just the raw JSON array.
 If there are no violations, return an empty array: []
 
-Each violation object must have EXACTLY these fields (copy the values directly from the matching rule):
+Each violation object must have EXACTLY these fields (copy values directly from the matching rule):
 {
-  "ruleId":   "<id from the matching rule>",
-  "title":    "<title from the matching rule>",
-  "severity": "<severity from the matching rule>",
-  "message":  "<message from the matching rule>",
-  "fix":      "<fix from the matching rule>",
+  "ruleId":   "<RuleId from the matching rule>",
+  "title":    "<Title from the matching rule>",
+  "severity": "<Severity from the matching rule>",
+  "message":  "<Message from the matching rule>",
+  "fix":      "<Fix from the matching rule>",
   "file":     "<filename from the diff line>",
   "fileLine": <line number as integer from the diff line>
 }
@@ -241,7 +249,7 @@ async function callGemini(prompt) {
 // This is a safety net: discard any issue whose ruleId doesn't exist in your
 // rules — prevents hallucinated violations from slipping through.
 function sanitizeIssues(issues, rules) {
-    const validIds = new Set(rules.map(r => r.id));
+    const validIds = new Set(rules.map(r => r.RuleId));
     const before = issues.length;
 
     const clean = issues.filter(issue => {
