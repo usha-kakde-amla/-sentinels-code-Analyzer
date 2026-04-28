@@ -1,0 +1,132 @@
+name: Approve and Commit Rule
+
+# Triggered manually from GitHub Actions UI
+# You provide the RuleId and the full rule JSON to commit
+on:
+  workflow_dispatch:
+    inputs:
+      rule_id:
+        description: 'RuleId of the rule to approve (e.g. SUGGESTED_SEC_001)'
+        required: true
+        type: string
+      rule_json:
+        description: 'Full rule JSON object (single rule, not array)'
+        required: true
+        type: string
+      target_file:
+        description: 'Which rules file to append to (e.g. rules/Suggested.json)'
+        required: false
+        default: 'rules/Suggested.json'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  approve-rule:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout Sentinels repo (this repo — where rules live)
+      - name: Checkout Sentinels repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. Validate the rule JSON input
+      - name: Validate rule JSON
+        id: validate
+        run: |
+          echo '${{ github.event.inputs.rule_json }}' | node -e "
+            let raw = '';
+            process.stdin.on('data', d => raw += d);
+            process.stdin.on('end', () => {
+              try {
+                const rule = JSON.parse(raw);
+                const required = ['RuleId','Title','Severity','Message','Fix'];
+                for (const f of required) {
+                  if (!rule[f]) { console.error('Missing field: ' + f); process.exit(1); }
+                }
+                console.log('✅ Rule JSON is valid');
+                console.log('RuleId:', rule.RuleId);
+              } catch(e) {
+                console.error('❌ Invalid JSON:', e.message);
+                process.exit(1);
+              }
+            });
+          "
+
+      # 3. Append rule to target JSON file
+      - name: Append rule to rules file
+        run: |
+          TARGET="${{ github.event.inputs.target_file }}"
+          RULE_JSON='${{ github.event.inputs.rule_json }}'
+          RULE_ID="${{ github.event.inputs.rule_id }}"
+
+          # Create file with empty array if it doesn't exist
+          if [ ! -f "$TARGET" ]; then
+            echo "[]" > "$TARGET"
+            echo "📄 Created new file: $TARGET"
+          fi
+
+          # Check if RuleId already exists in target file
+          EXISTING=$(node -e "
+            const fs = require('fs');
+            const rules = JSON.parse(fs.readFileSync('$TARGET', 'utf8'));
+            const found = rules.find(r => r.RuleId === '$RULE_ID');
+            console.log(found ? 'exists' : 'new');
+          ")
+
+          if [ "$EXISTING" = "exists" ]; then
+            echo "⚠️ Rule $RULE_ID already exists in $TARGET — skipping"
+            exit 0
+          fi
+
+          # Append new rule to the array
+          node -e "
+            const fs   = require('fs');
+            const rule = JSON.parse(process.env.RULE_JSON);
+            const arr  = JSON.parse(fs.readFileSync('$TARGET', 'utf8'));
+            arr.push(rule);
+            fs.writeFileSync('$TARGET', JSON.stringify(arr, null, 2) + '\n', 'utf8');
+            console.log('✅ Rule appended to $TARGET');
+          " RULE_JSON="$RULE_JSON"
+
+      # 4. Commit and push directly to main
+      - name: Commit approved rule to main
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          TARGET="${{ github.event.inputs.target_file }}"
+          RULE_ID="${{ github.event.inputs.rule_id }}"
+
+          git add "$TARGET"
+
+          # Only commit if there are staged changes
+          if git diff --cached --quiet; then
+            echo "ℹ️  No changes to commit — rule may already exist"
+          else
+            git commit -m "feat(rules): add approved rule $RULE_ID
+
+Rule approved via Sentinels approval workflow.
+Approved by: ${{ github.actor }}
+Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+            git push origin main
+            echo "✅ Rule $RULE_ID committed to main"
+          fi
+
+      # 5. Summary
+      - name: Print summary
+        run: |
+          echo "## ✅ Rule Approved" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**RuleId:** \`${{ github.event.inputs.rule_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**File:** \`${{ github.event.inputs.target_file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Approved by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+          echo '${{ github.event.inputs.rule_json }}' >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
