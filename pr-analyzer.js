@@ -193,25 +193,22 @@ Remember: Return ONLY the raw JSON array. No extra text. No suggestions outside 
 }
 
 // ── Call Gemini API ───────────────────────────────────────────────────────────
-async function callGemini(prompt) {
+async function callGemini(prompt, temperature = 0, systemText = null) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`;
 
     const body = {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-            temperature: 0,     // deterministic — no creative additions
-            topP: 1,
-            topK: 1,
-            responseMimeType: 'application/json',  // force JSON output mode
+            temperature,
+            responseMimeType: 'application/json',
         },
-        systemInstruction: {
-            parts: [{
-                text: 'You are a code rule enforcement engine. You ONLY report violations of the exact rules you are given. You NEVER invent new rules, suggest improvements, or add any output beyond what the rules specify. You ALWAYS return a raw JSON array only — no markdown, no prose, no code fences.'
-            }]
-        }
     };
 
-    console.log(`🤖 Calling Gemini (${MODEL})...`);
+    if (systemText) {
+        body.systemInstruction = { parts: [{ text: systemText }] };
+    }
+
+    console.log(`🤖 Calling Gemini (${MODEL}) temperature=${temperature}...`);
 
     const res = await fetch(url, {
         method: 'POST',
@@ -267,6 +264,69 @@ function sanitizeIssues(issues, rules) {
     return clean;
 }
 
+// ── Build free-form suggestion prompt ────────────────────────────────────────
+// Second Gemini call: no rules given — Gemini reviews freely and suggests
+// improvements. These will be compared against existing rules before approval.
+function buildSuggestionPrompt(addedLines) {
+    const diffText = addedLines
+        .map(l => `[FILE: ${l.file}] [LINE: ${l.fileLine}] ${l.content}`)
+        .join('\n');
+
+    return `You are an expert code reviewer. Analyze the following pull request diff and suggest new code quality, security, or performance rules that are NOT already common — focus on patterns specific to this codebase.
+
+For each suggestion, return it as a JSON object using this EXACT schema:
+{
+  "RuleId":      "SUGGESTED_<CATEGORY>_<3-digit number>",
+  "Title":       "Short rule title",
+  "Description": "What this rule checks and why it matters",
+  "Severity":    "Error | Warning | Info",
+  "Detection":   ["pattern or scenario that triggers this rule"],
+  "Message":     "Message shown to developer when violated",
+  "Fix":         "How to fix the violation"
+}
+
+Return ONLY a raw JSON array of suggestion objects. No markdown, no code fences, no extra text.
+If you have no suggestions, return: []
+
+PULL REQUEST DIFF:
+${diffText}`;
+}
+
+// ── Deduplicate suggestions against existing rules ────────────────────────────
+// Compares by RuleId prefix and title keywords to catch near-duplicates.
+function deduplicateSuggestions(suggestions, existingRules) {
+    const existingIds = new Set(existingRules.map(r => r.RuleId.toUpperCase()));
+    const existingTitles = existingRules.map(r => r.Title.toLowerCase());
+
+    const newSuggestions = [];
+
+    for (const s of suggestions) {
+        // Check exact RuleId match
+        if (existingIds.has(s.RuleId.toUpperCase())) {
+            console.log(`⏭️  Skipping duplicate RuleId: ${s.RuleId}`);
+            continue;
+        }
+
+        // Check title similarity — if 3+ words overlap with an existing rule title, skip
+        const sWords = new Set(s.Title.toLowerCase().split(/\W+/).filter(w => w.length > 3));
+        const isDuplicate = existingTitles.some(existingTitle => {
+            const eWords = existingTitle.split(/\W+/).filter(w => w.length > 3);
+            const overlap = eWords.filter(w => sWords.has(w)).length;
+            return overlap >= 3;
+        });
+
+        if (isDuplicate) {
+            console.log(`⏭️  Skipping near-duplicate title: "${s.Title}"`);
+            continue;
+        }
+
+        newSuggestions.push(s);
+    }
+
+    console.log(`💡 New suggestions after deduplication: ${newSuggestions.length} / ${suggestions.length}`);
+    return newSuggestions;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 (async function main() {
     console.log('🛡️  Sentinels Gemini-Enforced Rule Analyzer starting...\n');
@@ -284,12 +344,19 @@ function sanitizeIssues(issues, rules) {
     if (filteredLines.length === 0) {
         console.log('No relevant added lines to analyze — writing empty report.');
         fs.writeFileSync(OUTPUT_FILE, '[]', 'utf8');
+        fs.writeFileSync('new-suggestions.json', '[]', 'utf8');
         return;
     }
 
-    const prompt = buildPrompt(rules, filteredLines);
-    const raw = await callGemini(prompt);
-    const issues = sanitizeIssues(raw, rules);
+    // ── PASS 1: Enforce existing custom rules ──────────────────────────────────
+    console.log('\n── Pass 1: Enforcing existing custom rules ──');
+    const rulesPrompt = buildPrompt(rules, filteredLines);
+    const rawIssues = await callGemini(
+        rulesPrompt,
+        0,
+        'You are a strict code rule enforcement engine. Return ONLY a raw JSON array of violations. No prose, no markdown.'
+    );
+    const issues = sanitizeIssues(rawIssues, rules);
 
     fs.writeFileSync(OUTPUT_FILE, JSON.stringify(issues, null, 2), 'utf8');
 
@@ -298,11 +365,43 @@ function sanitizeIssues(issues, rules) {
         const sev = i.severity.toLowerCase();
         counts[sev] = (counts[sev] || 0) + 1;
     }
-
-    console.log(`\n📊 Results:`);
+    console.log(`\n📊 Rule violations:`);
     console.log(`   🔴 Errors:   ${counts.error}`);
     console.log(`   🟡 Warnings: ${counts.warning}`);
     console.log(`   🔵 Info:     ${counts.info}`);
-    console.log(`   Total:       ${issues.length}`);
-    console.log(`\n✅ Report written to ${OUTPUT_FILE}`);
+    console.log(`\n✅ report.json written`);
+
+    // ── PASS 2: Ask Gemini for new suggestions ─────────────────────────────────
+    console.log('\n── Pass 2: Asking Gemini for new rule suggestions ──');
+    const suggestionPrompt = buildSuggestionPrompt(filteredLines);
+
+    let rawSuggestions = [];
+    try {
+        rawSuggestions = await callGemini(
+            suggestionPrompt,
+            0.4,  // higher temperature = more creative suggestions
+            'You are an expert code reviewer. Suggest NEW rules as a raw JSON array only. No markdown, no prose, no code fences.'
+        );
+        console.log(`💡 Gemini returned ${rawSuggestions.length} suggestion(s)`);
+    } catch (err) {
+        console.error('❌ Pass 2 Gemini call failed:', err.message);
+        fs.writeFileSync('new-suggestions.json', '[]', 'utf8');
+        return;
+    }
+
+    if (!Array.isArray(rawSuggestions) || rawSuggestions.length === 0) {
+        console.log('💡 No new suggestions from Gemini.');
+        fs.writeFileSync('new-suggestions.json', '[]', 'utf8');
+        return;
+    }
+
+    // Debug: log suggestion RuleIds
+    console.log('💡 Suggestions received:', rawSuggestions.map(s => s.RuleId || s.Title).join(', '));
+
+    // ── PASS 3: Filter out duplicates of existing rules ────────────────────────
+    console.log('\n── Pass 3: Deduplicating against existing rules ──');
+    const newSuggestions = deduplicateSuggestions(rawSuggestions, rules);
+
+    fs.writeFileSync('new-suggestions.json', JSON.stringify(newSuggestions, null, 2), 'utf8');
+    console.log(`\n✅ new-suggestions.json written (${newSuggestions.length} new rule(s) pending approval)`);
 })();
