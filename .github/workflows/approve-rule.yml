@@ -110,9 +110,9 @@ jobs:
           else
             git commit -m "feat(rules): add approved rule $RULE_ID
 
-Rule approved via Sentinels approval workflow.
-Approved by: ${{ github.actor }}
-Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+           Rule approved via Sentinels approval workflow.
+           Approved by: ${{ github.actor }}
+                Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
             git push origin main
             echo "✅ Rule $RULE_ID committed to main"
