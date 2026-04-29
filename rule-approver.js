@@ -17,10 +17,10 @@ if (rules.length === 0) {
 
 const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
-    port: process.env.SMTP_PORT,
+    port: Number(process.env.SMTP_PORT),
     secure: false,
     auth: {
-        user: process.env.SMTP_USER,
+        user: process.env.SMTP_USER,   // should be "apikey"
         pass: process.env.SMTP_PASS
     }
 });
@@ -39,14 +39,15 @@ ${JSON.stringify(rules, null, 2)}
 (async () => {
     try {
         await transporter.sendMail({
-            from: process.env.SMTP_USER,
+            from: process.env.FROM_EMAIL,   // ✅ FIXED
             to: process.env.APPROVAL_EMAIL,
             subject: "Rule Approval Required",
             text: body
         });
 
-        console.log("📧 Email sent");
+        console.log("📧 Email sent successfully");
     } catch (err) {
         console.error("❌ Email failed:", err.message);
+        process.exit(1);
     }
 })();
