@@ -1,263 +1,185 @@
-﻿/**
- * rule-approver.js
+﻿#!/usr/bin/env node
+/**
+ * rule-approver.js  – Send one approval email per new rule suggestion.
  *
- * Reads new-suggestions.json, sends one approval email per rule,
- * and writes pending-approvals.json so the approve-rule.js handler
- * knows what to commit once a reviewer clicks Approve.
+ * Usage:
+ *   node rule-approver.js new-suggestions.json
  *
- * Usage:  node rule-approver.js <suggestions-file>
- *
- * Env vars required:
+ * Required env vars (set as GitHub secrets):
  *   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
- *   APPROVAL_EMAIL   – reviewer's address
- *   FROM_EMAIL       – sender address
- *   APPROVE_WEBHOOK  – base URL for the approval endpoint
- *                      e.g. https://your-app.example.com/approve
- *   PR_TITLE         – injected by GitHub Actions
- *   PR_URL           – injected by GitHub Actions
- *   GITHUB_RUN_ID    – injected automatically by GitHub Actions
- *   GITHUB_REPOSITORY– injected automatically by GitHub Actions
+ *   APPROVAL_EMAIL, FROM_EMAIL, APPROVE_WEBHOOK
+ *   PR_TITLE, PR_URL, GITHUB_RUN_ID, GITHUB_REPOSITORY
  */
 
 'use strict';
 
 const fs = require('fs');
-const path = require('path');
 const nodemailer = require('nodemailer');
-const crypto = require('crypto');
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Config ───────────────────────────────────────────────────────────────────
+const SUGGESTIONS_FILE = process.argv[2] || 'new-suggestions.json';
+const SMTP_HOST = process.env.SMTP_HOST || '';
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587', 10);
+const SMTP_USER = process.env.SMTP_USER || 'apikey';
+const SMTP_PASS = process.env.SMTP_PASS || '';
+const APPROVAL_EMAIL = process.env.APPROVAL_EMAIL || '';
+const FROM_EMAIL = process.env.FROM_EMAIL || '';
+const APPROVE_WEBHOOK = process.env.APPROVE_WEBHOOK || '';
+const PR_TITLE = process.env.PR_TITLE || '(unknown PR)';
+const PR_URL = process.env.PR_URL || '';
+const GITHUB_RUN_ID = process.env.GITHUB_RUN_ID || '';
+const GITHUB_REPOSITORY = process.env.GITHUB_REPOSITORY || '';
 
-function generateToken() {
-    return crypto.randomBytes(24).toString('hex');
+// ─── Build approve / reject URLs ─────────────────────────────────────────────
+function buildApproveUrl(ruleId, action) {
+    if (!APPROVE_WEBHOOK) return `(webhook not configured — see approve-rule.js)`;
+    const params = new URLSearchParams({
+        ruleId,
+        action,
+        runId: GITHUB_RUN_ID,
+        repo: GITHUB_REPOSITORY,
+    });
+    return `${APPROVE_WEBHOOK}?${params.toString()}`;
 }
 
-function escapeHtml(str) {
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
-
-function buildEmailHtml({ rule, approveUrl, rejectUrl, prTitle, prUrl, runId }) {
-    const json = JSON.stringify(rule, null, 2);
-    const severity = (rule.severity || 'info').toLowerCase();
-    const badgeColor = { error: '#d73a49', warning: '#e36209', info: '#0366d6' }[severity] || '#586069';
+// ─── HTML email body ──────────────────────────────────────────────────────────
+function buildHtml(rule, approveUrl, rejectUrl) {
+    const sev = (rule.Severity || rule.severity || 'warning').toLowerCase();
+    const sevColor = { error: '#dc2626', warning: '#d97706', info: '#2563eb' }[sev] || '#6b7280';
 
     return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>New Rule Suggestion — Approval Required</title>
-  <style>
-    body        { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                  background: #f6f8fa; margin: 0; padding: 24px; color: #24292e; }
-    .card       { background: #fff; border: 1px solid #e1e4e8; border-radius: 8px;
-                  max-width: 640px; margin: 0 auto; overflow: hidden; }
-    .header     { background: #24292e; padding: 20px 24px; }
-    .header h1  { color: #fff; margin: 0; font-size: 18px; }
-    .header p   { color: #8b949e; margin: 4px 0 0; font-size: 13px; }
-    .body       { padding: 24px; }
-    .badge      { display: inline-block; padding: 2px 8px; border-radius: 12px;
-                  font-size: 12px; font-weight: 600; color: #fff;
-                  background: ${badgeColor}; text-transform: uppercase; }
-    .meta       { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0 20px; }
-    .meta span  { font-size: 13px; color: #586069; }
-    .meta strong{ color: #24292e; }
-    pre         { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px;
-                  padding: 16px; font-size: 13px; overflow-x: auto;
-                  white-space: pre-wrap; word-break: break-word; }
-    .desc       { background: #fffbdd; border-left: 4px solid #e36209;
-                  padding: 10px 14px; border-radius: 0 4px 4px 0;
-                  font-size: 14px; margin: 16px 0; }
-    .actions    { display: flex; gap: 12px; margin-top: 24px; }
-    .btn        { display: inline-block; padding: 10px 22px; border-radius: 6px;
-                  font-size: 14px; font-weight: 600; text-decoration: none;
-                  text-align: center; }
-    .btn-approve{ background: #2ea44f; color: #fff; }
-    .btn-reject { background: #d73a49; color: #fff; }
-    .footer     { border-top: 1px solid #e1e4e8; padding: 16px 24px;
-                  font-size: 12px; color: #586069; }
-  </style>
-</head>
+<html>
+<head><meta charset="utf-8"><style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f9fafb; color:#111; }
+  .card { max-width:600px; margin:40px auto; background:#fff; border-radius:12px; box-shadow:0 2px 12px rgba(0,0,0,.1); overflow:hidden; }
+  .header { background:#1e293b; color:#fff; padding:24px 32px; }
+  .header h1 { margin:0; font-size:20px; }
+  .header p  { margin:6px 0 0; font-size:13px; color:#94a3b8; }
+  .body { padding:28px 32px; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:99px; font-size:12px; font-weight:600;
+           background:${sevColor}22; color:${sevColor}; text-transform:uppercase; margin-bottom:16px; }
+  table { width:100%; border-collapse:collapse; margin:16px 0; }
+  td { padding:10px 12px; font-size:14px; vertical-align:top; border-bottom:1px solid #f1f5f9; }
+  td:first-child { color:#64748b; width:140px; white-space:nowrap; }
+  .patterns { font-family:monospace; font-size:12px; background:#f1f5f9; padding:8px; border-radius:6px; }
+  .actions { display:flex; gap:12px; margin-top:24px; }
+  .btn { display:inline-block; padding:12px 28px; border-radius:8px; font-size:15px; font-weight:600;
+         text-decoration:none; text-align:center; }
+  .btn-approve { background:#16a34a; color:#fff; }
+  .btn-reject  { background:#dc2626; color:#fff; }
+  .footer { padding:16px 32px; background:#f8fafc; font-size:12px; color:#94a3b8; border-top:1px solid #f1f5f9; }
+</style></head>
 <body>
 <div class="card">
   <div class="header">
-    <h1>🛡️ Sentinels — New Rule Suggestion</h1>
-    <p>A new code-quality rule requires your approval before it is added.</p>
+    <h1>🛡️ Sentinels — New Rule Approval Required</h1>
+    <p>PR: <strong>${PR_TITLE}</strong> &nbsp;|&nbsp; <a href="${PR_URL}" style="color:#60a5fa">${PR_URL || 'view PR'}</a></p>
   </div>
   <div class="body">
-    <h2 style="margin:0 0 4px">${escapeHtml(rule.name || rule.id || 'Unnamed Rule')}</h2>
-    <span class="badge">${escapeHtml(severity)}</span>
-
-    <div class="meta">
-      <span><strong>ID:</strong> ${escapeHtml(rule.id || '—')}</span>
-      <span><strong>Category:</strong> ${escapeHtml(rule.category || '—')}</span>
-      <span><strong>PR:</strong> <a href="${escapeHtml(prUrl)}">${escapeHtml(prTitle)}</a></span>
-      <span><strong>Run:</strong> ${escapeHtml(runId)}</span>
-    </div>
-
-    <div class="desc">📋 ${escapeHtml(rule.description || 'No description provided.')}</div>
-
-    ${rule.example ? `<p style="margin:16px 0 4px;font-weight:600">Bad-code example:</p>
-    <pre>${escapeHtml(rule.example)}</pre>` : ''}
-
-    ${rule.pattern ? `<p style="margin:16px 0 4px;font-weight:600">Detection pattern:</p>
-    <pre>${escapeHtml(rule.pattern)}</pre>` : ''}
-
-    <p style="margin:20px 0 4px;font-weight:600">Full rule JSON:</p>
-    <pre>${escapeHtml(json)}</pre>
-
+    <div class="badge">${sev}</div>
+    <table>
+      <tr><td>Rule ID</td>    <td><strong>${rule.RuleId || rule.ruleId}</strong></td></tr>
+      <tr><td>Title</td>      <td>${rule.Title || rule.title}</td></tr>
+      <tr><td>Category</td>   <td>${rule.Category || rule.category || '—'}</td></tr>
+      <tr><td>Description</td><td>${rule.Description || rule.description || '—'}</td></tr>
+      <tr><td>Message</td>    <td>${rule.Message || rule.message || '—'}</td></tr>
+      <tr><td>Fix</td>        <td>${rule.Fix || rule.fix || '—'}</td></tr>
+      <tr><td>Extensions</td> <td>${(rule.FileExtensions || rule.fileExtensions || []).join(', ') || 'all'}</td></tr>
+      <tr><td>Patterns</td>   <td><div class="patterns">${(rule.Patterns || rule.patterns || []).join('<br>')}</div></td></tr>
+    </table>
     <div class="actions">
-      <a class="btn btn-approve" href="${approveUrl}">✅ Approve &amp; Add Rule</a>
-      <a class="btn btn-reject"  href="${rejectUrl}">❌ Reject Rule</a>
+      <a href="${approveUrl}" class="btn btn-approve">✅ Approve Rule</a>
+      <a href="${rejectUrl}"  class="btn btn-reject">❌ Reject Rule</a>
     </div>
+    <p style="font-size:12px;color:#94a3b8;margin-top:16px;">
+      Approving adds this rule to your Sentinels rules automatically via the approve-rule.js webhook handler.
+    </p>
   </div>
   <div class="footer">
-    This email was generated automatically by the Sentinels Code Analyzer.
-    Clicking Approve will add this rule to your rules repository via a GitHub Actions workflow.
-    Run ID: ${escapeHtml(runId)}
+    Sentinels Code Analyzer &nbsp;|&nbsp; Run: ${GITHUB_RUN_ID} &nbsp;|&nbsp; Repo: ${GITHUB_REPOSITORY}
   </div>
 </div>
 </body>
 </html>`;
 }
 
-function buildEmailText({ rule, approveUrl, rejectUrl, prTitle, prUrl, runId }) {
-    return `
-SENTINELS — NEW RULE SUGGESTION
-================================
-
-A new code-quality rule was suggested from PR "${prTitle}".
-It must be approved before being added to your rules file.
-
-Rule Name   : ${rule.name || rule.id || 'Unnamed'}
-ID          : ${rule.id || '—'}
-Severity    : ${rule.severity || '—'}
-Category    : ${rule.category || '—'}
-
-Description : ${rule.description || '—'}
-
-${rule.example ? `Bad-code example:\n${rule.example}\n` : ''}
-${rule.pattern ? `Detection pattern:\n${rule.pattern}\n` : ''}
-
-Full JSON:
-${JSON.stringify(rule, null, 2)}
-
-PR  : ${prTitle}  (${prUrl})
-Run : ${runId}
-
-─────────────────────────────────────
-APPROVE : ${approveUrl}
-REJECT  : ${rejectUrl}
-─────────────────────────────────────
-
-This message was sent by the Sentinels Code Analyzer GitHub Action.
-`.trim();
-}
-
-// ── Main ─────────────────────────────────────────────────────────────────────
-
-async function main() {
-    const suggestionsFile = process.argv[2] || 'new-suggestions.json';
-
-    if (!fs.existsSync(suggestionsFile)) {
-        console.log(`No suggestions file found at ${suggestionsFile}. Nothing to do.`);
+// ─── Main ─────────────────────────────────────────────────────────────────────
+(async () => {
+    if (!fs.existsSync(SUGGESTIONS_FILE)) {
+        console.log(`[rule-approver] File not found: ${SUGGESTIONS_FILE} — nothing to send.`);
         process.exit(0);
     }
 
-    let suggestions;
+    let suggestions = [];
     try {
-        suggestions = JSON.parse(fs.readFileSync(suggestionsFile, 'utf8'));
+        const raw = JSON.parse(fs.readFileSync(SUGGESTIONS_FILE, 'utf8'));
+        suggestions = Array.isArray(raw) ? raw : [];
     } catch (e) {
-        console.error('Failed to parse suggestions file:', e.message);
+        console.error(`[rule-approver] Could not parse ${SUGGESTIONS_FILE}: ${e.message}`);
         process.exit(1);
     }
 
-    if (!Array.isArray(suggestions) || suggestions.length === 0) {
-        console.log('No new rule suggestions to process.');
+    if (suggestions.length === 0) {
+        console.log('[rule-approver] No suggestions to email.');
         process.exit(0);
     }
 
-    // ── SMTP transporter ────────────────────────────────────────────────────
+    if (!SMTP_HOST || !APPROVAL_EMAIL || !FROM_EMAIL) {
+        console.error('[rule-approver] Missing SMTP_HOST / APPROVAL_EMAIL / FROM_EMAIL — aborting.');
+        process.exit(1);
+    }
+
     const transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT || '587', 10),
-        secure: process.env.SMTP_PORT === '465',
-        auth: {
-            user: process.env.SMTP_USER || 'apikey',
-            pass: process.env.SMTP_PASS,
-        },
+        host: SMTP_HOST,
+        port: SMTP_PORT,
+        secure: SMTP_PORT === 465,
+        auth: { user: SMTP_USER, pass: SMTP_PASS },
     });
 
-    const approvalEmail = process.env.APPROVAL_EMAIL;
-    const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER;
-    const webhookBase = (process.env.APPROVE_WEBHOOK || '').replace(/\/$/, '');
-    const prTitle = process.env.PR_TITLE || 'Unknown PR';
-    const prUrl = process.env.PR_URL || '#';
-    const runId = process.env.GITHUB_RUN_ID || 'local';
-    const repo = process.env.GITHUB_REPOSITORY || '';
-
-    if (!approvalEmail) {
-        console.error('APPROVAL_EMAIL is not set — cannot send approval emails.');
-        process.exit(1);
-    }
-
-    // ── Build pending-approvals registry ────────────────────────────────────
-    // Each entry maps a token → { rule, status: 'pending' }
-    // approve-rule.js reads this file to know which rule to commit.
-    const pendingFile = 'pending-approvals.json';
-    const pendingMap = fs.existsSync(pendingFile)
-        ? JSON.parse(fs.readFileSync(pendingFile, 'utf8'))
-        : {};
-
-    let sent = 0;
+    // Record pending approvals for traceability
+    const pending = [];
 
     for (const rule of suggestions) {
-        const approveToken = generateToken();
-        const rejectToken = generateToken();
+        const ruleId = rule.RuleId || rule.ruleId || `RULE-${Date.now()}`;
+        const title = rule.Title || rule.title || 'Unnamed Rule';
+        const approveUrl = buildApproveUrl(ruleId, 'approve');
+        const rejectUrl = buildApproveUrl(ruleId, 'reject');
 
-        // Store tokens → rule
-        pendingMap[approveToken] = { rule, action: 'approve', status: 'pending', ts: Date.now() };
-        pendingMap[rejectToken] = { rule, action: 'reject', status: 'pending', ts: Date.now() };
+        const html = buildHtml(rule, approveUrl, rejectUrl);
 
-        // Build URLs
-        // If no webhook is configured, fall back to a GitHub Actions dispatch URL hint
-        let approveUrl, rejectUrl;
-        if (webhookBase) {
-            approveUrl = `${webhookBase}?token=${approveToken}&action=approve`;
-            rejectUrl = `${webhookBase}?token=${rejectToken}&action=reject`;
-        } else {
-            // Fallback: instructions URL (reviewer will run approve-rule.js manually)
-            const repoUrl = repo ? `https://github.com/${repo}` : 'your repository';
-            approveUrl = `${repoUrl}/actions  →  run "Add Approved Rule" workflow with token: ${approveToken}`;
-            rejectUrl = `${repoUrl}/actions  →  run "Add Approved Rule" workflow with token: ${rejectToken}`;
-        }
-
-        const ctx = { rule, approveUrl, rejectUrl, prTitle, prUrl, runId };
+        console.log(`[rule-approver] Sending approval email for: ${ruleId} — "${title}"`);
 
         try {
-            await transporter.sendMail({
-                from: fromEmail,
-                to: approvalEmail,
-                subject: `[Sentinels] Approve new rule: "${rule.name || rule.id}" — ${prTitle}`,
-                text: buildEmailText(ctx),
-                html: buildEmailHtml(ctx),
-            });
+            const info = await transporter.sendMail({
+                from: FROM_EMAIL,
+                to: APPROVAL_EMAIL,
+                subject: `🛡️ Sentinels — Approve new rule: [${ruleId}] ${title}`,
+                html,
+                text: `
+New Sentinels rule suggestion requires your approval.
 
-            console.log(`✉️  Approval email sent for rule: ${rule.id || rule.name}`);
-            sent++;
-        } catch (err) {
-            console.error(`Failed to send email for rule "${rule.id || rule.name}":`, err.message);
+Rule ID:     ${ruleId}
+Title:       ${title}
+Severity:    ${rule.Severity || rule.severity}
+Description: ${rule.Description || rule.description || '—'}
+Fix:         ${rule.Fix || rule.fix || '—'}
+
+APPROVE: ${approveUrl}
+REJECT:  ${rejectUrl}
+
+PR: ${PR_TITLE}
+${PR_URL}
+        `.trim(),
+            });
+            console.log(`  ✅ Sent: ${info.messageId}`);
+            pending.push({ ruleId, title, status: 'pending', sentAt: new Date().toISOString() });
+        } catch (e) {
+            console.error(`  ❌ Failed to send for ${ruleId}: ${e.message}`);
+            pending.push({ ruleId, title, status: 'email-failed', error: e.message });
         }
     }
 
-    // Persist pending approvals so approve-rule.js can resolve them
-    fs.writeFileSync(pendingFile, JSON.stringify(pendingMap, null, 2));
-    console.log(`\nSent ${sent}/${suggestions.length} approval email(s).`);
-    console.log(`Pending approvals saved to ${pendingFile}`);
-}
-
-main().catch(e => { console.error(e); process.exit(1); });
+    fs.writeFileSync('pending-approvals.json', JSON.stringify(pending, null, 2));
+    console.log(`[rule-approver] Done. ${pending.filter(p => p.status === 'pending').length}/${suggestions.length} emails sent.`);
+    console.log('[rule-approver] Pending approvals written to pending-approvals.json');
+})();
