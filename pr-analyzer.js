@@ -1,182 +1,308 @@
+#!/usr/bin/env node
+/**
+ * Sentinels PR Analyzer — Gemini-Enforced Custom Rules
+ *
+ * Sends your custom rules + PR diff to Gemini and instructs it to ONLY
+ * report violations of those exact rules. No free-form AI suggestions.
+ *
+ * Rule JSON schema (each file = one rule or array of rules):
+ * {
+ *   "id": "NO_CONSOLE_LOG",
+ *   "title": "No console.log in production code",
+ *   "severity": "error" | "warning" | "info",
+ *   "message": "console.log should not be committed.",
+ *   "fix": "Remove or replace with a proper logger.",
+ *   "filePattern": "\\.js$"   // optional: only apply to matching filenames
+ * }
+ *
+ * Gemini is told: look at the diff, apply only these rules, return JSON.
+ * It is explicitly forbidden from inventing new issues outside the rules.
+ */
+
 const fs = require('fs');
 const path = require('path');
-const minimist = require('minimist');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const args = require('minimist')(process.argv.slice(2));
 
-const args = minimist(process.argv.slice(2));
+// ── CLI args ─────────────────────────────────────────────────────────────────
+const DIFF_FILE = args.diff || 'pr.diff';
+const OUTPUT_FILE = args.output || 'report.json';
+const RULES_DIR = args.rules || path.join(__dirname, 'rules');
+const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const API_KEY = process.env.GEMINI_API_KEY;
 
-const diffFile = args.diff;
-const outputFile = args.output || 'report.json';
-const rulesDir = args.rules || './rules';
-
-if (!fs.existsSync(diffFile)) {
-    console.error("❌ Diff file not found");
+if (!API_KEY) {
+    console.error('❌ GEMINI_API_KEY environment variable is not set.');
     process.exit(1);
 }
 
-const diff = fs.readFileSync(diffFile, 'utf8');
+// ── Load rules from rules/ folder ────────────────────────────────────────────
+function loadRules(rulesDir) {
+    if (!fs.existsSync(rulesDir)) {
+        console.error(`❌ Rules directory not found: ${rulesDir}`);
+        process.exit(1);
+    }
 
-// =======================
-// LOAD RULES
-// =======================
-let rules = [];
+    const files = fs.readdirSync(rulesDir).filter(f => f.endsWith('.json'));
 
-if (fs.existsSync(rulesDir)) {
-    const files = fs.readdirSync(rulesDir);
+    if (files.length === 0) {
+        console.warn(`⚠️  No JSON rule files found in: ${rulesDir}`);
+        return [];
+    }
 
+    const rules = [];
     for (const file of files) {
-        if (!file.endsWith('.json')) continue;
-
         try {
-            const data = JSON.parse(fs.readFileSync(path.join(rulesDir, file), 'utf8'));
-            const arr = Array.isArray(data) ? data : [data];
-
-            for (const r of arr) {
-                if (!r.ruleId || !r.pattern) continue;
-
-                rules.push({
-                    ruleId: r.ruleId,
-                    title: r.title,
-                    description: r.description || '',
-                    severity: r.severity || 'Info',
-                    pattern: new RegExp(r.pattern, 'i'),
-                    fix: r.fix || ''
-                });
+            const raw = fs.readFileSync(path.join(rulesDir, file), 'utf8');
+            const parsed = JSON.parse(raw);
+            const list = Array.isArray(parsed) ? parsed : [parsed];
+            for (const rule of list) {
+                validateRule(rule, file);
+                rules.push(rule);
             }
-        } catch (e) {
-            console.log(`❌ Failed to load ${file}: ${e.message}`);
+            console.log(`✅ Loaded ${list.length} rule(s) from ${file}`);
+        } catch (err) {
+            console.error(`❌ Failed to load ${file}: ${err.message}`);
         }
+    }
+
+    console.log(`📋 Total rules loaded: ${rules.length}`);
+    return rules;
+}
+
+function validateRule(rule, sourceFile) {
+    // Your schema uses: RuleId, Title, Severity, Message, Fix, Detection
+    const required = ['RuleId', 'Title', 'Severity', 'Message', 'Fix'];
+    for (const field of required) {
+        if (!rule[field]) {
+            throw new Error(`Rule in ${sourceFile} is missing required field: "${field}"`);
+        }
+    }
+    if (!['error', 'warning', 'info'].includes(rule.Severity.toLowerCase())) {
+        throw new Error(`Rule "${rule.RuleId}" Severity must be Error|Warning|Info`);
     }
 }
 
-console.log(`✅ Loaded ${rules.length} rules`);
-
-// =======================
-// PARSE DIFF
-// =======================
-const lines = diff.split('\n');
-
-let currentFile = '';
-let lineNumber = 0;
-const issues = [];
-
-for (const line of lines) {
-    if (line.startsWith('+++ b/')) {
-        currentFile = line.replace('+++ b/', '').trim();
-        continue;
+// ── Parse diff to extract added lines with metadata ───────────────────────────
+// Returns: [{ file, fileLine, content }]
+function parseDiff(diffPath) {
+    if (!fs.existsSync(diffPath)) {
+        console.error(`❌ Diff file not found: ${diffPath}`);
+        process.exit(1);
     }
 
-    if (line.startsWith('@@')) {
-        const match = line.match(/\+(\d+)/);
-        lineNumber = match ? parseInt(match[1]) - 1 : 0;
-        continue;
+    const lines = fs.readFileSync(diffPath, 'utf8').split('\n');
+    const added = [];
+    let curFile = null;
+    let fileLine = 0;
+
+    for (const line of lines) {
+        if (line.startsWith('diff --git ')) {
+            const match = line.match(/b\/(.+)$/);
+            curFile = match ? match[1] : null;
+            fileLine = 0;
+            continue;
+        }
+        if (line.startsWith('@@')) {
+            const match = line.match(/\+(\d+)/);
+            fileLine = match ? parseInt(match[1], 10) - 1 : 0;
+            continue;
+        }
+        if (line.startsWith('+++ ') || line.startsWith('--- ')) continue;
+
+        if (line.startsWith('+')) {
+            fileLine++;
+            if (curFile) added.push({ file: curFile, fileLine, content: line.slice(1) });
+        } else if (!line.startsWith('-')) {
+            fileLine++;
+        }
     }
 
-    if (line.startsWith('+') && !line.startsWith('+++')) {
-        lineNumber++;
+    console.log(`🔍 Parsed ${added.length} added line(s) from diff`);
+    return added;
+}
 
-        const code = line.substring(1);
-
+// ── Filter added lines by rule's filePattern (pre-filter before Gemini) ──────
+function preFilterLines(addedLines, rules) {
+    const relevant = new Set();
+    for (const { file } of addedLines) {
         for (const rule of rules) {
-            if (rule.pattern.test(code)) {
-                issues.push({
-                    file: currentFile,
-                    fileLine: lineNumber,
-                    ruleId: rule.ruleId,
-                    title: rule.title,
-                    message: rule.description,
-                    fix: rule.fix,
-                    severity: rule.severity
-                });
+            if (!rule.filePattern || new RegExp(rule.filePattern).test(file)) {
+                relevant.add(file);
+                break;
             }
         }
     }
+    return addedLines.filter(l => relevant.has(l.file));
 }
 
-// =======================
-// GEMINI SUGGESTIONS
-// =======================
-async function runGemini() {
-    if (!process.env.GEMINI_API_KEY) {
-        console.log("⚠️ Gemini API key not found");
-        fs.writeFileSync('new-suggestions.json', '[]');
-        return;
-    }
+// ── Build the strict Gemini prompt ───────────────────────────────────────────
+function buildPrompt(rules, addedLines) {
+    const rulesJson = JSON.stringify(rules, null, 2);
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({
-        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+    const diffText = addedLines
+        .map(l => `[FILE: ${l.file}] [LINE: ${l.fileLine}] ${l.content}`)
+        .join('\n');
+
+    return `You are a strict code review enforcement engine.
+
+You will be given:
+1. A list of CUSTOM RULES defined by the team. Each rule has:
+   - RuleId: unique rule identifier
+   - Title: short label
+   - Severity: Error | Warning | Info
+   - Description: what the rule checks
+   - Detection: list of patterns/scenarios that indicate a violation
+   - Message: what to tell the developer
+   - Fix: how to fix the violation
+2. The added lines from a pull request diff (each prefixed with file name and line number).
+
+YOUR ONLY JOB:
+- Use the "Detection" hints in each rule to identify violations in the added lines.
+- Report ONLY violations of the exact rules listed below.
+- Do NOT suggest improvements, best practices, or any issues not covered by the rules.
+- Do NOT add commentary, explanations, or extra fields.
+- Do NOT invent new RuleIds or issues not in the rules list.
+- If a line does not violate any rule, ignore it completely.
+
+OUTPUT FORMAT:
+Return ONLY a valid JSON array. No markdown, no code fences, no extra text — just the raw JSON array.
+If there are no violations, return an empty array: []
+
+Each violation object must have EXACTLY these fields (copy values directly from the matching rule):
+{
+  "ruleId":   "<RuleId from the matching rule>",
+  "title":    "<Title from the matching rule>",
+  "severity": "<Severity from the matching rule>",
+  "message":  "<Message from the matching rule>",
+  "fix":      "<Fix from the matching rule>",
+  "file":     "<filename from the diff line>",
+  "fileLine": <line number as integer from the diff line>
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CUSTOM RULES (enforce ONLY these — do not go beyond them):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${rulesJson}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PULL REQUEST DIFF (added lines only):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${diffText}
+
+Remember: Return ONLY the raw JSON array. No extra text. No suggestions outside the rules above.`;
+}
+
+// ── Call Gemini API ───────────────────────────────────────────────────────────
+async function callGemini(prompt) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`;
+
+    const body = {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+            temperature: 0,     // deterministic — no creative additions
+            topP: 1,
+            topK: 1,
+            responseMimeType: 'application/json',  // force JSON output mode
+        },
+        systemInstruction: {
+            parts: [{
+                text: 'You are a code rule enforcement engine. You ONLY report violations of the exact rules you are given. You NEVER invent new rules, suggest improvements, or add any output beyond what the rules specify. You ALWAYS return a raw JSON array only — no markdown, no prose, no code fences.'
+            }]
+        }
+    };
+
+    console.log(`🤖 Calling Gemini (${MODEL})...`);
+
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
     });
 
-    const prompt = `
-Analyze this PR diff and suggest NEW code quality rules.
-
-Return ONLY JSON array.
-
-Fields:
-id, name, description, severity, pattern
-
-Diff:
-${diff.substring(0, 8000)}
-`;
-
-    let suggestions = [];
-
-    try {
-        const result = await model.generateContent(prompt);
-        let text = result.response.text();
-
-        text = text.replace(/```json|```/g, '').trim();
-        suggestions = JSON.parse(text);
-    } catch (e) {
-        console.log("❌ Gemini parse failed:", e.message);
-        suggestions = [];
+    if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Gemini API error ${res.status}: ${err}`);
     }
 
-    // =======================
-    // REMOVE DUPLICATES
-    // =======================
-    const existingIds = new Set(rules.map(r => r.ruleId.toLowerCase()));
+    const data = await res.json();
 
-    const mapped = suggestions.map(s => ({
-        ruleId: (s.id || '').toUpperCase(),
-        title: s.name,
-        description: s.description,
-        severity: (s.severity || 'info').toLowerCase() === 'error'
-            ? 'Error'
-            : (s.severity || '').toLowerCase() === 'warning'
-                ? 'Warning'
-                : 'Info',
-        pattern: s.pattern || ".*",
-        fix: "Follow best practice"
-    }));
+    // Extract text from Gemini response structure
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
 
-    const newSuggestions = mapped.filter(r => {
-        if (!r.ruleId) return false;
+    // Strip any markdown fences Gemini may add despite instructions
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
 
-        const key = r.ruleId.toLowerCase();
+    try {
+        const parsed = JSON.parse(cleaned);
+        if (!Array.isArray(parsed)) {
+            console.warn('⚠️  Gemini returned non-array JSON — treating as empty');
+            return [];
+        }
+        return parsed;
+    } catch (e) {
+        console.error('❌ Failed to parse Gemini response as JSON:\n', cleaned.slice(0, 500));
+        throw e;
+    }
+}
 
-        if (existingIds.has(key)) {
-            console.log(`Skipping duplicate: ${r.ruleId}`);
+// ── Sanitize Gemini output against the known rule set ────────────────────────
+// This is a safety net: discard any issue whose ruleId doesn't exist in your
+// rules — prevents hallucinated violations from slipping through.
+function sanitizeIssues(issues, rules) {
+    const validIds = new Set(rules.map(r => r.RuleId));
+    const before = issues.length;
+
+    const clean = issues.filter(issue => {
+        if (!validIds.has(issue.ruleId)) {
+            console.warn(`⚠️  Discarding hallucinated rule "${issue.ruleId}" — not in your rules`);
             return false;
         }
-
-        existingIds.add(key);
         return true;
     });
 
-    fs.writeFileSync('new-suggestions.json', JSON.stringify(newSuggestions, null, 2));
+    if (clean.length < before) {
+        console.log(`🧹 Removed ${before - clean.length} hallucinated issue(s)`);
+    }
 
-    console.log(`✅ New suggestions: ${newSuggestions.length}`);
+    return clean;
 }
 
-// =======================
-// SAVE OUTPUT
-// =======================
-(async () => {
-    await runGemini();
+// ── Main ──────────────────────────────────────────────────────────────────────
+(async function main() {
+    console.log('🛡️  Sentinels Gemini-Enforced Rule Analyzer starting...\n');
 
-    fs.writeFileSync(outputFile, JSON.stringify(issues, null, 2));
+    const rules = loadRules(RULES_DIR);
+    if (rules.length === 0) {
+        console.log('No rules found — writing empty report.');
+        fs.writeFileSync(OUTPUT_FILE, '[]', 'utf8');
+        return;
+    }
 
-    console.log(`✅ Issues found: ${issues.length}`);
+    const addedLines = parseDiff(DIFF_FILE);
+    const filteredLines = preFilterLines(addedLines, rules);
+
+    if (filteredLines.length === 0) {
+        console.log('No relevant added lines to analyze — writing empty report.');
+        fs.writeFileSync(OUTPUT_FILE, '[]', 'utf8');
+        return;
+    }
+
+    const prompt = buildPrompt(rules, filteredLines);
+    const raw = await callGemini(prompt);
+    const issues = sanitizeIssues(raw, rules);
+
+    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(issues, null, 2), 'utf8');
+
+    const counts = { error: 0, warning: 0, info: 0 };
+    for (const i of issues) {
+        const sev = i.severity.toLowerCase();
+        counts[sev] = (counts[sev] || 0) + 1;
+    }
+
+    console.log(`\n📊 Results:`);
+    console.log(`   🔴 Errors:   ${counts.error}`);
+    console.log(`   🟡 Warnings: ${counts.warning}`);
+    console.log(`   🔵 Info:     ${counts.info}`);
+    console.log(`   Total:       ${issues.length}`);
+    console.log(`\n✅ Report written to ${OUTPUT_FILE}`);
 })();
