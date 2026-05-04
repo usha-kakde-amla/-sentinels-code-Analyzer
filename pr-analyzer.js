@@ -17,6 +17,11 @@
  *
  * Gemini is told: look at the diff, apply only these rules, return JSON.
  * It is explicitly forbidden from inventing new issues outside the rules.
+ *
+ * NEW: --suggest-rules <file>
+ *   Gemini also looks for patterns NOT covered by existing rules and writes
+ *   them to <file>. The CI workflow then emails an approver; on approval
+ *   the rule is auto-committed to the rules/ folder.
  */
 
 const fs = require('fs');
@@ -27,6 +32,7 @@ const args = require('minimist')(process.argv.slice(2));
 const DIFF_FILE = args.diff || 'pr.diff';
 const OUTPUT_FILE = args.output || 'report.json';
 const RULES_DIR = args.rules || path.join(__dirname, 'rules');
+const SUGGEST_RULES_FILE = args['suggest-rules'] || null;   // NEW
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const API_KEY = process.env.GEMINI_API_KEY;
 
@@ -70,7 +76,6 @@ function loadRules(rulesDir) {
 }
 
 function validateRule(rule, sourceFile) {
-    // Your schema uses: RuleId, Title, Severity, Message, Fix, Detection
     const required = ['RuleId', 'Title', 'Severity', 'Message', 'Fix'];
     for (const field of required) {
         if (!rule[field]) {
@@ -83,7 +88,6 @@ function validateRule(rule, sourceFile) {
 }
 
 // ── Parse diff to extract added lines with metadata ───────────────────────────
-// Returns: [{ file, fileLine, content }]
 function parseDiff(diffPath) {
     if (!fs.existsSync(diffPath)) {
         console.error(`❌ Diff file not found: ${diffPath}`);
@@ -121,7 +125,7 @@ function parseDiff(diffPath) {
     return added;
 }
 
-// ── Filter added lines by rule's filePattern (pre-filter before Gemini) ──────
+// ── Filter added lines by rule's filePattern ──────────────────────────────────
 function preFilterLines(addedLines, rules) {
     const relevant = new Set();
     for (const { file } of addedLines) {
@@ -135,13 +139,50 @@ function preFilterLines(addedLines, rules) {
     return addedLines.filter(l => relevant.has(l.file));
 }
 
-// ── Build the strict Gemini prompt ───────────────────────────────────────────
-function buildPrompt(rules, addedLines) {
+// ── Build Gemini prompt ───────────────────────────────────────────────────────
+function buildPrompt(rules, addedLines, includeSuggestions) {
     const rulesJson = JSON.stringify(rules, null, 2);
 
     const diffText = addedLines
         .map(l => `[FILE: ${l.file}] [LINE: ${l.fileLine}] ${l.content}`)
         .join('\n');
+
+    // NEW: suggestion block appended only when --suggest-rules flag is passed
+    const suggestionBlock = includeSuggestions ? `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RULE SUGGESTION TASK (Part 2):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+After identifying violations, also look at the diff holistically.
+If you spot recurring anti-patterns, architectural smells, or best-practice gaps
+that are NOT covered by any of the existing rules above, suggest them as new rules.
+
+Add a "suggestedRules" array to your JSON response object.
+Each item must follow this exact schema:
+{
+  "RuleId":      "SUGGESTED-<UPPERCASE-SLUG>",
+  "Title":       "Short human-readable title",
+  "Description": "Why this pattern is problematic and when to flag it",
+  "Severity":    "error | warning | info",
+  "Detection":   ["pattern or scenario 1", "pattern or scenario 2"],
+  "Message":     "What to tell the developer",
+  "Fix":         "How a developer should fix or avoid this pattern",
+  "example":     "The specific code snippet from this PR that inspired the rule",
+  "tags":        ["tag1", "tag2"]
+}
+
+Return "suggestedRules": [] if no new rules are warranted.
+
+IMPORTANT: Because you are now returning both violations AND suggestions,
+change your output format to a JSON OBJECT (not a plain array):
+{
+  "violations": [ ...violation objects... ],
+  "suggestedRules": [ ...suggested rule objects... ]
+}
+` : '';
+
+    const outputFormatNote = includeSuggestions
+        ? 'Return ONLY a valid JSON OBJECT with keys "violations" and "suggestedRules". No markdown, no code fences, no extra text.'
+        : 'Return ONLY a valid JSON array. No markdown, no code fences, no extra text — just the raw JSON array.\nIf there are no violations, return an empty array: []';
 
     return `You are a strict code review enforcement engine.
 
@@ -156,7 +197,7 @@ You will be given:
    - Fix: how to fix the violation
 2. The added lines from a pull request diff (each prefixed with file name and line number).
 
-YOUR ONLY JOB:
+YOUR ONLY JOB (Part 1 — Violations):
 - Use the "Detection" hints in each rule to identify violations in the added lines.
 - Report ONLY violations of the exact rules listed below.
 - Do NOT suggest improvements, best practices, or any issues not covered by the rules.
@@ -165,8 +206,7 @@ YOUR ONLY JOB:
 - If a line does not violate any rule, ignore it completely.
 
 OUTPUT FORMAT:
-Return ONLY a valid JSON array. No markdown, no code fences, no extra text — just the raw JSON array.
-If there are no violations, return an empty array: []
+${outputFormatNote}
 
 Each violation object must have EXACTLY these fields (copy values directly from the matching rule):
 {
@@ -188,8 +228,8 @@ ${rulesJson}
 PULL REQUEST DIFF (added lines only):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${diffText}
-
-Remember: Return ONLY the raw JSON array. No extra text. No suggestions outside the rules above.`;
+${suggestionBlock}
+Remember: ${includeSuggestions ? 'Return ONLY the raw JSON object with "violations" and "suggestedRules" keys. No extra text.' : 'Return ONLY the raw JSON array. No extra text. No suggestions outside the rules above.'}`;
 }
 
 // ── Call Gemini API ───────────────────────────────────────────────────────────
@@ -199,10 +239,10 @@ async function callGemini(prompt) {
     const body = {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-            temperature: 0,     // deterministic — no creative additions
+            temperature: 0,
             topP: 1,
             topK: 1,
-            responseMimeType: 'application/json',  // force JSON output mode
+            responseMimeType: 'application/json',
         },
         systemInstruction: {
             parts: [{
@@ -225,19 +265,11 @@ async function callGemini(prompt) {
     }
 
     const data = await res.json();
-
-    // Extract text from Gemini response structure
     const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-
-    // Strip any markdown fences Gemini may add despite instructions
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
 
     try {
         const parsed = JSON.parse(cleaned);
-        if (!Array.isArray(parsed)) {
-            console.warn('⚠️  Gemini returned non-array JSON — treating as empty');
-            return [];
-        }
         return parsed;
     } catch (e) {
         console.error('❌ Failed to parse Gemini response as JSON:\n', cleaned.slice(0, 500));
@@ -245,9 +277,7 @@ async function callGemini(prompt) {
     }
 }
 
-// ── Sanitize Gemini output against the known rule set ────────────────────────
-// This is a safety net: discard any issue whose ruleId doesn't exist in your
-// rules — prevents hallucinated violations from slipping through.
+// ── Sanitize violations against the known rule set ────────────────────────────
 function sanitizeIssues(issues, rules) {
     const validIds = new Set(rules.map(r => r.RuleId));
     const before = issues.length;
@@ -267,6 +297,21 @@ function sanitizeIssues(issues, rules) {
     return clean;
 }
 
+// ── NEW: Write suggested rules to file ────────────────────────────────────────
+function writeSuggestedRules(suggested, outputPath) {
+    if (!outputPath) return;
+
+    const valid = (suggested || []).filter(r => r.RuleId && r.Title && r.Severity);
+
+    if (valid.length === 0) {
+        console.log('ℹ️  Gemini found no new rule suggestions.');
+    } else {
+        console.log(`💡 Gemini suggested ${valid.length} new rule(s) — writing to ${outputPath}`);
+    }
+
+    fs.writeFileSync(outputPath, JSON.stringify(valid, null, 2) + '\n', 'utf8');
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 (async function main() {
     console.log('🛡️  Sentinels Gemini-Enforced Rule Analyzer starting...\n');
@@ -275,6 +320,7 @@ function sanitizeIssues(issues, rules) {
     if (rules.length === 0) {
         console.log('No rules found — writing empty report.');
         fs.writeFileSync(OUTPUT_FILE, '[]', 'utf8');
+        if (SUGGEST_RULES_FILE) fs.writeFileSync(SUGGEST_RULES_FILE, '[]\n', 'utf8');
         return;
     }
 
@@ -284,15 +330,44 @@ function sanitizeIssues(issues, rules) {
     if (filteredLines.length === 0) {
         console.log('No relevant added lines to analyze — writing empty report.');
         fs.writeFileSync(OUTPUT_FILE, '[]', 'utf8');
+        if (SUGGEST_RULES_FILE) fs.writeFileSync(SUGGEST_RULES_FILE, '[]\n', 'utf8');
         return;
     }
 
-    const prompt = buildPrompt(rules, filteredLines);
-    const raw = await callGemini(prompt);
-    const issues = sanitizeIssues(raw, rules);
+    // Pass includeSuggestions=true only when --suggest-rules flag is set
+    const prompt = buildPrompt(rules, filteredLines, !!SUGGEST_RULES_FILE);
+    const geminiResult = await callGemini(prompt);
 
+    // ── Handle both response shapes ───────────────────────────────────────────
+    // Without --suggest-rules  → Gemini returns a plain array  (old behaviour)
+    // With    --suggest-rules  → Gemini returns { violations, suggestedRules }
+    let rawIssues;
+    let suggestedRules = [];
+
+    if (Array.isArray(geminiResult)) {
+        // Old shape — plain violations array
+        rawIssues = geminiResult;
+    } else if (geminiResult && typeof geminiResult === 'object') {
+        // New shape — object with violations + suggestedRules
+        rawIssues = Array.isArray(geminiResult.violations) ? geminiResult.violations : [];
+        suggestedRules = Array.isArray(geminiResult.suggestedRules) ? geminiResult.suggestedRules : [];
+    } else {
+        console.warn('⚠️  Unexpected Gemini response shape — treating as empty');
+        rawIssues = [];
+    }
+
+    // Sanitize violations (existing behaviour — unchanged)
+    const issues = sanitizeIssues(rawIssues, rules);
+
+    // Write violations report (existing behaviour — unchanged)
     fs.writeFileSync(OUTPUT_FILE, JSON.stringify(issues, null, 2), 'utf8');
 
+    // NEW: write suggested rules when flag is present
+    if (SUGGEST_RULES_FILE) {
+        writeSuggestedRules(suggestedRules, SUGGEST_RULES_FILE);
+    }
+
+    // ── Summary ───────────────────────────────────────────────────────────────
     const counts = { error: 0, warning: 0, info: 0 };
     for (const i of issues) {
         const sev = i.severity.toLowerCase();
@@ -304,5 +379,13 @@ function sanitizeIssues(issues, rules) {
     console.log(`   🟡 Warnings: ${counts.warning}`);
     console.log(`   🔵 Info:     ${counts.info}`);
     console.log(`   Total:       ${issues.length}`);
+
+    if (SUGGEST_RULES_FILE) {
+        console.log(`   💡 New rule suggestions: ${suggestedRules.length}`);
+    }
+
     console.log(`\n✅ Report written to ${OUTPUT_FILE}`);
+    if (SUGGEST_RULES_FILE) {
+        console.log(`✅ Suggested rules written to ${SUGGEST_RULES_FILE}`);
+    }
 })();
