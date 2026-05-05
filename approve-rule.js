@@ -1,24 +1,25 @@
 ﻿#!/usr/bin/env node
 /**
- * approve-rule.js  – Webhook / CLI handler that commits an approved rule.
+ * approve-rule.js  —  Sentinels rule approval handler
  *
- * Two usage modes:
+ * Called by .github/workflows/approve-rule.yml but can also be run locally.
  *
- *  1. HTTP mode (Express):
- *       PORT=3001 node approve-rule.js
- *       GET /?ruleId=RULE-001&action=approve&runId=123&repo=org/repo
+ * Modes
+ * ──────
+ *  CLI (base64 payload)
+ *    node approve-rule.js --payload <base64url-encoded-rule-JSON> [--action approve|reject]
  *
- *  2. CLI mode (direct approval):
- *       node approve-rule.js --ruleId RULE-001 --action approve
+ *  CLI (lookup by ID)
+ *    node approve-rule.js --ruleId RULE-001 [--action approve|reject]
+ *    (looks up the rule in SUGGESTIONS_FILE)
  *
- * The approved rule is read from new-suggestions.json (or a path you specify),
- * appended to rules/<Category>.json (or rules/custom.json if no category),
- * and committed back to the repo via the GitHub API.
+ * Required env vars when committing back to GitHub
+ *   GITHUB_TOKEN         personal-access-token or Actions token with contents:write
+ *   GITHUB_REPOSITORY    e.g. "org/repo"
  *
- * Required env vars:
- *   GITHUB_TOKEN, GITHUB_REPOSITORY  (set automatically in Actions)
- *   RULES_DIR  (default: ./rules)
- *   SUGGESTIONS_FILE  (default: ./new-suggestions.json)
+ * Optional env vars
+ *   RULES_DIR            default: ./rules
+ *   SUGGESTIONS_FILE     default: ./suggested-rules.json
  */
 
 'use strict';
@@ -27,183 +28,145 @@ const fs = require('fs');
 const path = require('path');
 
 const RULES_DIR = process.env.RULES_DIR || './rules';
-const SUGGESTIONS_FILE = process.env.SUGGESTIONS_FILE || './new-suggestions.json';
+const SUGGESTIONS_FILE = process.env.SUGGESTIONS_FILE || './suggested-rules.json';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const GITHUB_REPO = process.env.GITHUB_REPOSITORY || '';
 
-// ─── Core: add rule to appropriate JSON file ──────────────────────────────────
-function addRuleToFile(rule, rulesDir) {
-    if (!fs.existsSync(rulesDir)) fs.mkdirSync(rulesDir, { recursive: true });
+// ─── Parse CLI args ───────────────────────────────────────────────────────────
+function getArg(flag) {
+    const i = process.argv.indexOf(flag);
+    return i !== -1 ? process.argv[i + 1] : null;
+}
+
+const action = (getArg('--action') || 'approve').toLowerCase();
+const payload = getArg('--payload');
+const ruleId = getArg('--ruleId') || getArg('--rule-id');
+
+// ─── Decode or look up the rule ───────────────────────────────────────────────
+function loadRule() {
+    if (payload) {
+        try {
+            return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        } catch (e) {
+            console.error('❌ Failed to decode --payload:', e.message);
+            process.exit(1);
+        }
+    }
+
+    if (ruleId) {
+        if (!fs.existsSync(SUGGESTIONS_FILE)) {
+            console.error(`❌ Suggestions file not found: ${SUGGESTIONS_FILE}`);
+            process.exit(1);
+        }
+        const all = JSON.parse(fs.readFileSync(SUGGESTIONS_FILE, 'utf8'));
+        const rule = (Array.isArray(all) ? all : []).find(
+            r => (r.RuleId || r.ruleId || '').toLowerCase() === ruleId.toLowerCase()
+        );
+        if (!rule) {
+            console.error(`❌ Rule ${ruleId} not found in ${SUGGESTIONS_FILE}`);
+            process.exit(1);
+        }
+        return rule;
+    }
+
+    console.error('Usage: node approve-rule.js --payload <base64url> | --ruleId <ID>');
+    process.exit(1);
+}
+
+// ─── Write rule to the correct category file ─────────────────────────────────
+function addRuleToFile(rule) {
+    if (!fs.existsSync(RULES_DIR)) fs.mkdirSync(RULES_DIR, { recursive: true });
 
     const category = (rule.Category || rule.category || 'custom')
         .toLowerCase()
         .replace(/[^a-z0-9-]/g, '-');
-    const targetFile = path.join(rulesDir, `${category}.json`);
 
-    let existing = [];
+    // Match an existing file case-insensitively so "Security" stays "Security.json"
+    const existingFiles = fs.readdirSync(RULES_DIR).filter(f => f.endsWith('.json'));
+    const match = existingFiles.find(
+        f => f.replace('.json', '').toLowerCase() === category
+    );
+    const targetFile = path.join(RULES_DIR, match || `${category}.json`);
+
+    let rules = [];
     if (fs.existsSync(targetFile)) {
         try {
             const raw = JSON.parse(fs.readFileSync(targetFile, 'utf8'));
-            existing = Array.isArray(raw) ? raw : [raw];
-        } catch { existing = []; }
+            rules = Array.isArray(raw) ? raw : [raw];
+        } catch { rules = []; }
     }
 
-    // Guard against double-adding
     const id = (rule.RuleId || rule.ruleId || '').toLowerCase();
-    if (existing.some(r => (r.RuleId || r.ruleId || '').toLowerCase() === id)) {
-        console.log(`[approve-rule] Rule ${rule.RuleId} already exists in ${targetFile} — skipping.`);
-        return { targetFile, alreadyExists: true };
+    if (rules.some(r => (r.RuleId || r.ruleId || '').toLowerCase() === id)) {
+        console.log(`ℹ️  Rule ${rule.RuleId} already exists in ${targetFile} — skipping.`);
+        return { targetFile, added: false };
     }
 
-    existing.push(rule);
-    fs.writeFileSync(targetFile, JSON.stringify(existing, null, 2));
-    console.log(`[approve-rule] ✅ Rule ${rule.RuleId} added to ${targetFile}`);
-    return { targetFile, alreadyExists: false };
+    rules.push(rule);
+    fs.writeFileSync(targetFile, JSON.stringify(rules, null, 2) + '\n');
+    console.log(`✅ Rule ${rule.RuleId} written to ${targetFile}`);
+    return { targetFile, added: true };
 }
 
-// ─── Commit changed rule file via GitHub API ──────────────────────────────────
-async function commitRuleFile(filePath, repo, token, ruleId) {
-    if (!token || !repo) {
-        console.warn('[approve-rule] No GITHUB_TOKEN or GITHUB_REPOSITORY — skipping auto-commit.');
+// ─── Commit rule file back via GitHub Contents API ───────────────────────────
+async function commitRuleFile(filePath, ruleId) {
+    if (!GITHUB_TOKEN || !GITHUB_REPO) {
+        console.warn('⚠️  GITHUB_TOKEN / GITHUB_REPOSITORY not set — skipping auto-commit.');
         return;
     }
+
     const { default: fetch } = await import('node-fetch');
-    const apiBase = `https://api.github.com/repos/${repo}/contents/${filePath}`;
+    const relPath = path.relative('.', filePath).replace(/\\/g, '/');
+    const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/${relPath}`;
     const content = Buffer.from(fs.readFileSync(filePath, 'utf8')).toString('base64');
-
-    // Get current SHA (needed for update)
-    let sha = undefined;
-    const getRes = await fetch(apiBase, {
-        headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github+json' },
-    });
-    if (getRes.ok) {
-        const data = await getRes.json();
-        sha = data.sha;
-    }
-
-    const body = {
-        message: `chore(sentinels): approve rule ${ruleId} [skip ci]`,
-        content,
-        ...(sha ? { sha } : {}),
+    const headers = {
+        Authorization: `token ${GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
     };
 
-    const putRes = await fetch(apiBase, {
+    // Fetch current SHA (required for update)
+    let sha;
+    const getRes = await fetch(apiUrl, { headers });
+    if (getRes.ok) sha = (await getRes.json()).sha;
+
+    const putRes = await fetch(apiUrl, {
         method: 'PUT',
-        headers: {
-            Authorization: `token ${token}`,
-            Accept: 'application/vnd.github+json',
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
+        headers,
+        body: JSON.stringify({
+            message: `chore(sentinels): approve rule ${ruleId} [skip ci]`,
+            content,
+            ...(sha ? { sha } : {}),
+        }),
     });
 
     if (putRes.ok) {
-        console.log(`[approve-rule] ✅ Committed ${filePath} to ${repo}`);
+        console.log(`✅ Committed ${relPath} to ${GITHUB_REPO}`);
     } else {
         const err = await putRes.text();
-        console.error(`[approve-rule] ❌ Commit failed: ${err.slice(0, 300)}`);
-    }
-}
-
-// ─── Find rule in suggestions file ───────────────────────────────────────────
-function findRule(ruleId, suggestionsFile) {
-    if (!fs.existsSync(suggestionsFile)) return null;
-    try {
-        const all = JSON.parse(fs.readFileSync(suggestionsFile, 'utf8'));
-        return (Array.isArray(all) ? all : []).find(
-            r => (r.RuleId || r.ruleId || '').toLowerCase() === ruleId.toLowerCase()
-        ) || null;
-    } catch { return null; }
-}
-
-// ─── HTTP server mode ─────────────────────────────────────────────────────────
-function startServer() {
-    const http = require('http');
-    const PORT = parseInt(process.env.PORT || '3001', 10);
-
-    http.createServer(async (req, res) => {
-        const url = new URL(req.url, `http://localhost:${PORT}`);
-        const ruleId = url.searchParams.get('ruleId') || '';
-        const action = (url.searchParams.get('action') || '').toLowerCase();
-
-        if (!ruleId) {
-            res.writeHead(400); res.end('Missing ruleId'); return;
-        }
-
-        if (action === 'approve') {
-            const rule = findRule(ruleId, SUGGESTIONS_FILE);
-            if (!rule) {
-                res.writeHead(404); res.end(`Rule ${ruleId} not found in ${SUGGESTIONS_FILE}`); return;
-            }
-            const { targetFile, alreadyExists } = addRuleToFile(rule, RULES_DIR);
-            if (!alreadyExists) {
-                await commitRuleFile(targetFile, GITHUB_REPO, GITHUB_TOKEN, ruleId);
-            }
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(`<h2>✅ Rule ${ruleId} approved and added to ${path.basename(targetFile)}.</h2>`);
-        } else if (action === 'reject') {
-            console.log(`[approve-rule] Rule ${ruleId} rejected via webhook.`);
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(`<h2>❌ Rule ${ruleId} rejected. No changes made.</h2>`);
-        } else {
-            res.writeHead(400); res.end(`Unknown action: ${action}`);
-        }
-    }).listen(PORT, () => {
-        console.log(`[approve-rule] Webhook server listening on port ${PORT}`);
-    });
-}
-
-// ─── CLI mode ─────────────────────────────────────────────────────────────────
-async function runCli() {
-    const args = process.argv.slice(2);
-    const get = (f) => { const i = args.indexOf(f); return i !== -1 ? args[i + 1] : null; };
-    const ruleId = get('--ruleId') || get('--rule-id');
-    const action = (get('--action') || 'approve').toLowerCase();
-
-    if (!ruleId) {
-        console.error('Usage: node approve-rule.js --ruleId RULE-001 [--action approve|reject]');
+        console.error(`❌ Commit failed (${putRes.status}): ${err.slice(0, 400)}`);
         process.exit(1);
     }
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+(async () => {
+    const rule = loadRule();
+    const id = rule.RuleId || rule.ruleId || 'UNKNOWN';
 
     if (action === 'reject') {
-        console.log(`[approve-rule] Rule ${ruleId} rejected. No changes.`);
+        console.log(`❌ Rule ${id} rejected — no changes made.`);
         process.exit(0);
     }
 
-    const rule = findRule(ruleId, SUGGESTIONS_FILE);
-    if (!rule) {
-        console.error(`[approve-rule] Rule ${ruleId} not found in ${SUGGESTIONS_FILE}`);
+    if (action !== 'approve') {
+        console.error(`Unknown action "${action}" — expected "approve" or "reject".`);
         process.exit(1);
     }
 
-    const { targetFile, alreadyExists } = addRuleToFile(rule, RULES_DIR);
-    if (!alreadyExists) {
-        await commitRuleFile(targetFile, GITHUB_REPO, GITHUB_TOKEN, ruleId);
-    }
-}
-
-// ─── Entry point ──────────────────────────────────────────────────────────────
-if (process.argv.includes('--serve')) {
-    startServer();
-} else if (process.argv.includes('--ruleId') || process.argv.includes('--rule-id')) {
-    runCli().catch(e => { console.error(e); process.exit(1); });
-} else {
-    // Default: start server if PORT is set, else print help
-    if (process.env.PORT) {
-        startServer();
-    } else {
-        console.log(`
-approve-rule.js — Sentinels rule approval handler
-
-Modes:
-  HTTP server:  PORT=3001 node approve-rule.js
-  CLI:          node approve-rule.js --ruleId RULE-001 --action approve
-
-Env vars:
-  GITHUB_TOKEN, GITHUB_REPOSITORY  – for auto-commit
-  RULES_DIR                        – default: ./rules
-  SUGGESTIONS_FILE                 – default: ./new-suggestions.json
-    `.trim());
-        process.exit(0);
-    }
-}
+    const { targetFile, added } = addRuleToFile(rule);
+    if (added) await commitRuleFile(targetFile, id);
+})().catch(err => {
+    console.error('❌ Unexpected error:', err.message);
+    process.exit(1);
+});

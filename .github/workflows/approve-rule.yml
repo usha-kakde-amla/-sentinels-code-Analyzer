@@ -1,147 +1,243 @@
-name: ✅ Approve & Commit Rule
+name: 🛡️ Sentinels — Approve Rule
 
-# Triggered when the approver clicks "Approve & Add Rule" in the email.
-# The link opens GitHub Actions with inputs pre-filled.
-# Approver clicks "Run workflow" — that's the only manual step required.
+# ─── Triggered two ways ───────────────────────────────────────────────────────
+#  1. Via the "Approve & Add Rule" link in the approval email
+#     The link opens GitHub's workflow dispatch page with ?rule=<base64>&pr=<num>
+#     pre-filled (the approver clicks "Run workflow" to confirm).
+#
+#  2. Manually from the Actions tab.
+# ─────────────────────────────────────────────────────────────────────────────
 
 on:
   workflow_dispatch:
     inputs:
-      rule:
-        description: 'Base64url-encoded rule JSON (auto-filled from email link)'
-        required: true
-        type: string
-      pr:
-        description: 'PR number this rule came from'
+      rule_payload:
+        description: "Base64-encoded rule JSON (auto-filled from email link)"
         required: false
-        type: string
-
-  # Optional: headless one-click flow via a webhook proxy
-  repository_dispatch:
-    types: [approve-rule]
+        default: ""
+      rule_id:
+        description: "Rule ID to approve (alternative to rule_payload)"
+        required: false
+        default: ""
+      pr_number:
+        description: "PR that triggered this suggestion"
+        required: false
+        default: ""
+      action:
+        description: "approve or reject"
+        required: true
+        default: "approve"
+        type: choice
+        options:
+          - approve
+          - reject
 
 permissions:
-  contents: write       # commit the new rule file
-  pull-requests: write  # comment on the originating PR
+  contents: write        # push the new rule file
+  pull-requests: write   # post confirmation comment on the PR
 
 jobs:
-  commit-rule:
-    name: Commit approved rule to rules/
+  approve-rule:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout
-      - name: Checkout repository
+      # ── 1. Checkout Sentinels repo (where rules live) ──────────────────────
+      - name: Checkout Sentinels repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+          token: ${{ secrets.SENTINELS_BOT_TOKEN || secrets.GITHUB_TOKEN }}
 
-      # 2. Decode rule payload
-      - name: Decode rule payload
-        id: decode
-        run: |
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            RULE_B64="${{ github.event.client_payload.rule }}"
-            PR_NUM="${{ github.event.client_payload.pr }}"
-          else
-            RULE_B64="${{ github.event.inputs.rule }}"
-            PR_NUM="${{ github.event.inputs.pr }}"
-          fi
+      # ── 2. Setup Node ──────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
 
-          # base64url → standard base64 → JSON
-          RULE_JSON=$(echo "$RULE_B64" | tr '_-' '/+' | base64 --decode)
+      # ── 3. Install deps ────────────────────────────────────────────────────
+      - name: Install deps
+        run: npm install minimist node-fetch@3
 
-          echo "Decoded rule:"
-          echo "$RULE_JSON" | python3 -m json.tool || echo "$RULE_JSON"
-
-          # Derive filename from RuleId field (matches the schema used in pr-analyzer.js)
-          RULE_ID=$(echo "$RULE_JSON" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          rid = d.get('RuleId') or d.get('ruleId') or 'new-rule'
-          print(rid.lower().replace(' ', '-'))
-          ")
-
-          echo "rule_json=$RULE_JSON" >> $GITHUB_OUTPUT
-          echo "rule_id=$RULE_ID"     >> $GITHUB_OUTPUT
-          echo "pr_num=$PR_NUM"       >> $GITHUB_OUTPUT
-
-      # 3. Write rule JSON to rules/ folder
-      - name: Write rule file
-        run: |
-          mkdir -p rules
-
-          python3 - <<'PYEOF'
-          import json, os
-          from datetime import datetime, timezone
-
-          rule     = json.loads(os.environ['RULE_JSON_ENV'])
-          target   = os.environ['TARGET_ENV']
-          pr_num   = os.environ['PR_NUM_ENV']
-          actor    = os.environ['ACTOR_ENV']
-
-          # Stamp approval metadata
-          rule['_approvedAt'] = datetime.now(timezone.utc).isoformat()
-          rule['_approvedBy'] = actor
-          rule['_sourcePR']   = int(pr_num) if pr_num.isdigit() else pr_num
-          rule['_autoAdded']  = True
-
-          with open(target, 'w') as f:
-              json.dump(rule, f, indent=2)
-              f.write('\n')
-
-          print(f"✅ Written: {target}")
-          PYEOF
+      # ── 4. Decode rule payload & run approve-rule.js ───────────────────────
+      - name: Decode & approve rule
         env:
-          RULE_JSON_ENV: ${{ steps.decode.outputs.rule_json }}
-          TARGET_ENV:    rules/${{ steps.decode.outputs.rule_id }}.json
-          PR_NUM_ENV:    ${{ steps.decode.outputs.pr_num }}
-          ACTOR_ENV:     ${{ github.actor }}
-
-      # 4. Commit and push
-      - name: Commit and push rule
+          GITHUB_TOKEN: ${{ secrets.SENTINELS_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RULES_DIR: ./rules
+          ACTION: ${{ github.event.inputs.action }}
+          RULE_PAYLOAD: ${{ github.event.inputs.rule_payload }}
+          RULE_ID: ${{ github.event.inputs.rule_id }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
         run: |
-          RULE_ID="${{ steps.decode.outputs.rule_id }}"
-          PR_NUM="${{ steps.decode.outputs.pr_num }}"
+          node << 'EOF'
+          const fs   = require('fs');
+          const path = require('path');
 
+          const ACTION  = (process.env.ACTION  || 'approve').toLowerCase();
+          const PAYLOAD = process.env.RULE_PAYLOAD || '';
+          const RULE_ID = process.env.RULE_ID || '';
+          const RULES_DIR = process.env.RULES_DIR || './rules';
+
+          // ── Decode rule from base64 payload OR look it up in a suggestions
+          //    artifact that was uploaded by the PR analysis workflow.
+          let rule = null;
+
+          if (PAYLOAD) {
+            try {
+              rule = JSON.parse(Buffer.from(PAYLOAD, 'base64url').toString('utf8'));
+              console.log(`Decoded rule from payload: ${rule.RuleId || rule.ruleId}`);
+            } catch (e) {
+              console.error('Failed to decode rule payload:', e.message);
+              process.exit(1);
+            }
+          } else if (RULE_ID) {
+            // Fallback: look for a previously uploaded suggestions file
+            const SUGGESTIONS_FILE = './suggested-rules.json';
+            if (!fs.existsSync(SUGGESTIONS_FILE)) {
+              console.error(`No suggested-rules.json and no rule payload — cannot proceed.`);
+              process.exit(1);
+            }
+            const all = JSON.parse(fs.readFileSync(SUGGESTIONS_FILE, 'utf8'));
+            rule = all.find(r =>
+              (r.RuleId || r.ruleId || '').toLowerCase() === RULE_ID.toLowerCase()
+            );
+            if (!rule) {
+              console.error(`Rule ${RULE_ID} not found in suggestions file.`);
+              process.exit(1);
+            }
+          } else {
+            console.error('Provide either rule_payload or rule_id.');
+            process.exit(1);
+          }
+
+          if (ACTION === 'reject') {
+            console.log(`Rule ${rule.RuleId || rule.ruleId} rejected. No changes made.`);
+            fs.writeFileSync('approval-result.json', JSON.stringify({ action: 'rejected', rule }));
+            process.exit(0);
+          }
+
+          // ── Add rule to the appropriate category file ──────────────────────
+          if (!fs.existsSync(RULES_DIR)) fs.mkdirSync(RULES_DIR, { recursive: true });
+
+          const category = (rule.Category || rule.category || 'custom')
+            .toLowerCase()
+            .replace(/[^a-z0-9-]/g, '-');
+
+          // Try to match an existing rules file (case-insensitive)
+          let targetFile;
+          const existing = fs.readdirSync(RULES_DIR).filter(f => f.endsWith('.json'));
+          const match = existing.find(f => f.replace('.json','').toLowerCase() === category);
+          targetFile = path.join(RULES_DIR, match || `${category}.json`);
+
+          let rules = [];
+          if (fs.existsSync(targetFile)) {
+            try {
+              const raw = JSON.parse(fs.readFileSync(targetFile, 'utf8'));
+              rules = Array.isArray(raw) ? raw : [raw];
+            } catch { rules = []; }
+          }
+
+          const id = (rule.RuleId || rule.ruleId || '').toLowerCase();
+          if (rules.some(r => (r.RuleId || r.ruleId || '').toLowerCase() === id)) {
+            console.log(`Rule ${rule.RuleId} already exists in ${targetFile} — nothing to do.`);
+            fs.writeFileSync('approval-result.json', JSON.stringify({ action: 'already_exists', rule, targetFile }));
+            process.exit(0);
+          }
+
+          rules.push(rule);
+          fs.writeFileSync(targetFile, JSON.stringify(rules, null, 2) + '\n');
+          console.log(`✅ Rule ${rule.RuleId} written to ${targetFile}`);
+
+          fs.writeFileSync('approval-result.json', JSON.stringify({
+            action: 'approved',
+            rule,
+            targetFile: path.relative('.', targetFile),
+          }));
+          EOF
+
+      # ── 5. Read result for subsequent steps ────────────────────────────────
+      - name: Read approval result
+        id: result
+        run: |
+          ACTION=$(node -e "console.log(require('./approval-result.json').action)")
+          FILE=$(node -e "console.log(require('./approval-result.json').targetFile || '')")
+          RULE_ID=$(node -e "const r=require('./approval-result.json').rule; console.log(r.RuleId||r.ruleId||'')")
+          TITLE=$(node -e "const r=require('./approval-result.json').rule; console.log(r.Title||r.title||'')")
+          echo "action=$ACTION"   >> $GITHUB_OUTPUT
+          echo "file=$FILE"       >> $GITHUB_OUTPUT
+          echo "rule_id=$RULE_ID" >> $GITHUB_OUTPUT
+          echo "title=$TITLE"     >> $GITHUB_OUTPUT
+
+      # ── 6. Commit the updated rules file back to the repo ──────────────────
+      - name: Commit approved rule
+        if: steps.result.outputs.action == 'approved'
+        run: |
           git config user.name  "Sentinels Bot"
           git config user.email "sentinels-bot@users.noreply.github.com"
+          git add "${{ steps.result.outputs.file }}"
+          git commit -m "chore(sentinels): approve rule ${{ steps.result.outputs.rule_id }} [skip ci]
 
-          git add "rules/${RULE_ID}.json"
+          Rule: ${{ steps.result.outputs.title }}
+          Approved via workflow dispatch
+          PR: #${{ github.event.inputs.pr_number }}"
+          git push
 
-          if git diff --cached --quiet; then
-            echo "ℹ️  Rule already exists with identical content — nothing to commit."
-          else
-            git commit -m "feat(rules): add approved rule '${RULE_ID}' from PR #${PR_NUM} [skip ci]"
-            git push origin HEAD
-            echo "✅ Rule committed and pushed."
-          fi
-
-      # 5. Comment on the originating PR
+      # ── 7. Post a comment on the originating PR ────────────────────────────
       - name: Comment on PR
-        if: steps.decode.outputs.pr_num != ''
+        if: github.event.inputs.pr_number != ''
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const ruleId = '${{ steps.decode.outputs.rule_id }}';
-            const prNum  = parseInt('${{ steps.decode.outputs.pr_num }}', 10);
-            if (!prNum) return;
+            const action   = '${{ steps.result.outputs.action }}';
+            const ruleId   = '${{ steps.result.outputs.rule_id }}';
+            const title    = '${{ steps.result.outputs.title }}';
+            const file     = '${{ steps.result.outputs.file }}';
+            const prNumber = parseInt('${{ github.event.inputs.pr_number }}', 10);
 
-            await github.rest.issues.createComment({
-              owner:        context.repo.owner,
-              repo:         context.repo.repo,
-              issue_number: prNum,
-              body: [
-                `### ✅ New rule approved & committed`,
+            if (!prNumber) return;
+
+            let body;
+            if (action === 'approved') {
+              body = [
+                `### 🛡️ Sentinels — Rule Approved ✅`,
                 ``,
-                `| Field | Value |`,
-                `|---|---|`,
-                `| **Rule ID** | \`${ruleId}\` |`,
-                `| **Approved by** | @${{ github.actor }} |`,
-                `| **File** | [\`rules/${ruleId}.json\`](../../blob/main/rules/${ruleId}.json) |`,
+                `**\`${ruleId}\` — ${title}** has been approved and committed to \`${file}\`.`,
                 ``,
-                `This rule will be enforced automatically in all future Sentinels analyses.`,
-              ].join('\n'),
-            });
+                `It will now be enforced on all future PRs.`,
+              ].join('\n');
+            } else if (action === 'rejected') {
+              body = `### 🛡️ Sentinels — Rule Rejected ❌\n\n**\`${ruleId}\`** was rejected and will not be added.`;
+            } else {
+              body = `### 🛡️ Sentinels — Rule Already Exists ℹ️\n\n**\`${ruleId}\`** already exists in \`${file}\`. No changes made.`;
+            }
+
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            } catch (e) {
+              // PR may be in a different repo — not a fatal error
+              console.warn('Could not post PR comment:', e.message);
+            }
+
+      # ── 8. Summary ─────────────────────────────────────────────────────────
+      - name: Job summary
+        if: always()
+        run: |
+          ACTION="${{ steps.result.outputs.action }}"
+          RULE_ID="${{ steps.result.outputs.rule_id }}"
+          FILE="${{ steps.result.outputs.file }}"
+
+          if [ "$ACTION" = "approved" ]; then
+            echo "## ✅ Rule \`$RULE_ID\` approved" >> $GITHUB_STEP_SUMMARY
+            echo "Added to \`$FILE\` and committed to \`main\`." >> $GITHUB_STEP_SUMMARY
+          elif [ "$ACTION" = "rejected" ]; then
+            echo "## ❌ Rule \`$RULE_ID\` rejected" >> $GITHUB_STEP_SUMMARY
+            echo "No changes made." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ℹ️ Rule \`$RULE_ID\` already exists" >> $GITHUB_STEP_SUMMARY
+          fi
